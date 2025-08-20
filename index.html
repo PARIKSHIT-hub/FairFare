@@ -314,57 +314,53 @@ ${contextTips.map(tip => `
 }
 
 // ===== From services/apiService.ts =====
+// This app uses a public JSON blob service as a simulated, persistent backend.
+// WARNING: This is for demonstration purposes only and is not secure.
+// In a production environment, use a secure, authenticated backend service.
+const BACKEND_URL = 'https://jsonblob.com/api/jsonBlob/1269411986423939072';
+
+const getBackendData = async () => {
+    const response = await fetch(BACKEND_URL);
+    if (!response.ok) {
+        throw new Error('Failed to fetch data from the backend.');
+    }
+    return await response.json();
+};
+
+const updateBackendData = async (data) => {
+    const response = await fetch(BACKEND_URL, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+        },
+        body: JSON.stringify(data),
+    });
+    if (!response.ok) {
+        throw new Error('Failed to update data on the backend.');
+    }
+    return await response.json();
+};
+
 const getAuthToken = () => {
     return localStorage.getItem('session-token');
 };
+
 const getTips = async () => {
-    console.log("Fetching initial tips...");
-    return [
-        {
-            id: 1,
-            origin: "Indira Gandhi International Airport (DEL)",
-            destination: "New Delhi Metro Station",
-            transportMode: TransportMode.Metro,
-            estimatedCost: "₹60",
-            estimatedTime: "25 minutes",
-            advice: "Use the Airport Express Line (Orange Line) for a fast and cheap ride to the city center. It's much better than dealing with taxi or auto-rickshaw touts at the airport.",
-            user: { username: "MetroManMohan", score: 180, badges: ["Metro Master", "Top Contributor"] },
-            rating: 32,
-            coordinates: { lat: 28.5562, lng: 77.1000 }
-        },
-        {
-            id: 2,
-            origin: "Connaught Place",
-            destination: "Chandni Chowk",
-            transportMode: TransportMode.AutoRickshaw,
-            estimatedCost: "₹80-120",
-            estimatedTime: "15-20 minutes",
-            advice: "Negotiate the fare *before* getting into an auto-rickshaw, or use a ride-hailing app like Uber or Ola to book one for a fixed price. The traffic can be heavy, but it's a classic Delhi experience.",
-            user: { username: "DelhiExplorerPriya", score: 110, badges: ["Bargain Hunter"] },
-            rating: 25,
-            coordinates: { lat: 28.6304, lng: 77.2177 }
-        },
-        {
-            id: 3,
-            origin: "Central Delhi",
-            destination: "Various Locations",
-            transportMode: TransportMode.Bus,
-            estimatedCost: "₹5-25",
-            estimatedTime: "Varies",
-            advice: "Delhi's DTC buses are incredibly cheap, especially the AC ones. Use a transit app like Google Maps to figure out routes. It's a great way to see the city like a local.",
-            user: { username: "LocalSaverRavi", score: 90, badges: ["Frugal Traveler", "Route Wizard"] },
-            rating: 18,
-            coordinates: { lat: 28.6139, lng: 77.2090 }
-        },
-    ];
+    console.log("Fetching tips from cloud backend...");
+    const data = await getBackendData();
+    // Return tips in reverse chronological order (newest first)
+    return data.tips.sort((a, b) => b.id - a.id);
 };
+
 const addTip = async (tipData) => {
-    console.log("Submitting new tip:", tipData);
+    console.log("Submitting new tip to cloud backend:", tipData);
     const token = getAuthToken();
-    if (!token)
-        throw new Error("Authentication required to add a tip.");
+    if (!token) throw new Error("Authentication required to add a tip.");
+    
     const loggedInUser = JSON.parse(localStorage.getItem('fairfare-user') || '{}');
     const fetchedCoordinates = await getCoordinatesForAddress(tipData.origin);
+    
     const newTip = {
         ...tipData,
         id: Date.now(),
@@ -372,40 +368,74 @@ const addTip = async (tipData) => {
         user: { username: loggedInUser.name || "Anonymous", score: 1, badges: ["New Contributor"] },
         ...(fetchedCoordinates && { coordinates: fetchedCoordinates })
     };
-    const channel = new BroadcastChannel('fairfare_tips');
-    channel.postMessage(newTip);
-    channel.close();
+    
+    const data = await getBackendData();
+    data.tips.push(newTip);
+    await updateBackendData(data);
+    
     return newTip;
 };
+
 const updateRating = async (tipId, change) => {
-    console.log(`Updating rating for tip ${tipId} by ${change}`);
-    await new Promise(res => setTimeout(res, 200)); // Simulate network delay
-    return;
+    console.log(`Updating rating for tip ${tipId} by ${change} on cloud backend`);
+    const data = await getBackendData();
+    const tipIndex = data.tips.findIndex(tip => tip.id === tipId);
+    if (tipIndex !== -1) {
+        data.tips[tipIndex].rating += change;
+        await updateBackendData(data);
+    }
 };
+
 async function* postChatMessageStream(message, contextTips) {
     console.log("Streaming chat message from backend:", message);
     yield* getAiChatResponseStream(message, contextTips);
 }
+
 const loginWithGoogle = async (credential) => {
-    console.log("Sending Google credential to backend for verification...");
-    await new Promise(res => setTimeout(res, 400)); // Simulate network delay
+    console.log("Verifying Google credential and syncing with cloud backend...");
     const decoded = JSON.parse(atob(credential.split('.')[1]));
-    const user = {
+    const googleUser = {
         name: decoded.name,
         email: decoded.email,
         picture: decoded.picture
     };
-    const token = "backend-issued-secure-session-token-placeholder";
-    return { user, token };
+    
+    const data = await getBackendData();
+    let existingUser = data.users.find(u => u.email === googleUser.email);
+    let finalUser;
+
+    if (existingUser) {
+        existingUser.name = googleUser.name;
+        existingUser.picture = googleUser.picture; // Update with latest info from Google
+        finalUser = existingUser;
+        console.log("Existing user logged in with Google:", finalUser.email);
+    } else {
+        const newUser = {
+            id: Date.now(),
+            name: googleUser.name,
+            email: googleUser.email,
+            password: null, // No password for Google sign-ins
+            picture: googleUser.picture
+        };
+        data.users.push(newUser);
+        finalUser = newUser;
+        console.log("New user registered via Google:", finalUser.email);
+    }
+    
+    await updateBackendData(data);
+    
+    const token = "backend-issued-secure-session-token-google";
+    return { user: { name: finalUser.name, email: finalUser.email, picture: finalUser.picture }, token };
 };
+
 const registerUser = async (name, email, password) => {
-    console.log("Registering new user...");
-    await new Promise(res => setTimeout(res, 300)); // Simulate network delay
-    // In this demo app, we use localStorage as a simulated backend database.
-    let users = JSON.parse(localStorage.getItem('fairfare-users') || '[]');
-    if (users.find(u => u.email === email)) {
+    console.log("Registering new user on cloud backend...");
+    const data = await getBackendData();
+    
+    if (data.users.find(u => u.email === email)) {
         throw new Error('An account with this email already exists.');
     }
+    
     const newUser = {
         id: Date.now(),
         name,
@@ -413,22 +443,23 @@ const registerUser = async (name, email, password) => {
         password, // In a real app, this should be hashed!
         picture: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random&color=fff`
     };
-    users.push(newUser);
-    // Save the updated user list back to our simulated database.
-    localStorage.setItem('fairfare-users', JSON.stringify(users));
+    
+    data.users.push(newUser);
+    await updateBackendData(data);
+    
     const token = "backend-issued-secure-session-token-placeholder-email";
     return { user: { name: newUser.name, email: newUser.email, picture: newUser.picture }, token };
 };
+
 const loginWithEmail = async (email, password) => {
-    console.log("Logging in with email...");
-    await new Promise(res => setTimeout(res, 300)); // Simulate network delay
-    // Retrieve all registered users from our simulated backend (localStorage).
-    let users = JSON.parse(localStorage.getItem('fairfare-users') || '[]');
-    // Find the user that matches the login credentials.
-    const user = users.find(u => u.email === email && u.password === password);
+    console.log("Logging in with email via cloud backend...");
+    const data = await getBackendData();
+    const user = data.users.find(u => u.email === email && u.password === password);
+    
     if (!user) {
         throw new Error('Invalid email or password.');
     }
+    
     const token = "backend-issued-secure-session-token-placeholder-email";
     return { user: { name: user.name, email: user.email, picture: user.picture }, token };
 };
@@ -1062,25 +1093,7 @@ const App = () => {
         };
         loadTips();
     }, []);
-    useEffect(() => {
-        const channel = new BroadcastChannel('fairfare_tips');
-        const handleNewTip = (event) => {
-            const receivedTip = event.data;
-            setTips(prevTips => {
-                if (prevTips.some(tip => tip.id === receivedTip.id)) {
-                    return prevTips;
-                }
-                const newTips = [receivedTip, ...prevTips];
-                tipRefs.current = newTips.map(() => createRef());
-                return newTips;
-            });
-        };
-        channel.addEventListener('message', handleNewTip);
-        return () => {
-            channel.removeEventListener('message', handleNewTip);
-            channel.close();
-        };
-    }, []);
+    
     const handleAuthSuccess = ({ user, token }) => {
         setCurrentUser(user);
         localStorage.setItem('fairfare-user', JSON.stringify(user));
