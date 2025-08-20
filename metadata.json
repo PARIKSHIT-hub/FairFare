@@ -3,11 +3,5 @@
   "description": "A community-powered app connecting travelers with knowledgeable locals for transparent and fair-priced transportation guidance, helping to combat common tourist scams at major transit hubs.",
   "requestFramePermissions": [
     "geolocation"
-  ],
-  "env": [
-    {
-      "name": "API_KEY",
-      "value": "AIzaSyANMMrBd-cx6vambZINtViRf4LFzz-Se2g"
-    }
   ]
 }

@@ -207,8 +207,8 @@
   <script type="importmap">
 {
   "imports": {
-    "react": "https://esm.sh/react@^19.1.1",
-    "react-dom/client": "https://esm.sh/react-dom@^19.1.1/client",
+    "react": "https://esm.sh/react@^18.2.0",
+    "react-dom/client": "https://esm.sh/react-dom@^18.2.0/client",
     "@google/genai": "https://esm.sh/@google/genai@^1.15.0"
   }
 }
@@ -401,6 +401,7 @@ const loginWithGoogle = async (credential) => {
 const registerUser = async (name, email, password) => {
     console.log("Registering new user...");
     await new Promise(res => setTimeout(res, 300)); // Simulate network delay
+    // In this demo app, we use localStorage as a simulated backend database.
     let users = JSON.parse(localStorage.getItem('fairfare-users') || '[]');
     if (users.find(u => u.email === email)) {
         throw new Error('An account with this email already exists.');
@@ -413,6 +414,7 @@ const registerUser = async (name, email, password) => {
         picture: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random&color=fff`
     };
     users.push(newUser);
+    // Save the updated user list back to our simulated database.
     localStorage.setItem('fairfare-users', JSON.stringify(users));
     const token = "backend-issued-secure-session-token-placeholder-email";
     return { user: { name: newUser.name, email: newUser.email, picture: newUser.picture }, token };
@@ -420,7 +422,9 @@ const registerUser = async (name, email, password) => {
 const loginWithEmail = async (email, password) => {
     console.log("Logging in with email...");
     await new Promise(res => setTimeout(res, 300)); // Simulate network delay
+    // Retrieve all registered users from our simulated backend (localStorage).
     let users = JSON.parse(localStorage.getItem('fairfare-users') || '[]');
+    // Find the user that matches the login credentials.
     const user = users.find(u => u.email === email && u.password === password);
     if (!user) {
         throw new Error('Invalid email or password.');
