@@ -217,6 +217,13 @@
   <body class="bg-background">
     <div id="root"></div>
     <script type="text/babel" data-presets="react,typescript" data-type="module">
+// Polyfill process.env for browser environment and provide API key
+const process = {
+  env: {
+    API_KEY: "AIzaSyANMMrBd-cx6vambZINtViRf4LFzz-Se2g"
+  }
+};
+
 // BUNDLED CODE - ALL .TSX AND .TS FILES ARE MERGED HERE FOR STATIC HOSTING
 
 // ===== From types.ts =====
