@@ -398,6 +398,36 @@ const loginWithGoogle = async (credential) => {
     const token = "backend-issued-secure-session-token-placeholder";
     return { user, token };
 };
+const registerUser = async (name, email, password) => {
+    console.log("Registering new user...");
+    await new Promise(res => setTimeout(res, 300)); // Simulate network delay
+    let users = JSON.parse(localStorage.getItem('fairfare-users') || '[]');
+    if (users.find(u => u.email === email)) {
+        throw new Error('An account with this email already exists.');
+    }
+    const newUser = {
+        id: Date.now(),
+        name,
+        email,
+        password, // In a real app, this should be hashed!
+        picture: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random&color=fff`
+    };
+    users.push(newUser);
+    localStorage.setItem('fairfare-users', JSON.stringify(users));
+    const token = "backend-issued-secure-session-token-placeholder-email";
+    return { user: { name: newUser.name, email: newUser.email, picture: newUser.picture }, token };
+};
+const loginWithEmail = async (email, password) => {
+    console.log("Logging in with email...");
+    await new Promise(res => setTimeout(res, 300)); // Simulate network delay
+    let users = JSON.parse(localStorage.getItem('fairfare-users') || '[]');
+    const user = users.find(u => u.email === email && u.password === password);
+    if (!user) {
+        throw new Error('Invalid email or password.');
+    }
+    const token = "backend-issued-secure-session-token-placeholder-email";
+    return { user: { name: user.name, email: user.email, picture: user.picture }, token };
+};
 
 // ===== From React and components =====
 import React, { useState, useEffect, useMemo, useRef, createRef, forwardRef, useCallback } from 'react';
@@ -410,7 +440,7 @@ const FairfareLogo = () => (React.createElement("svg", { className: "h-10 w-auto
         React.createElement("path", { d: "M18,18 C40,5 150,5 172,18", fill: "none", stroke: "currentColor", strokeWidth: "4", strokeLinecap: "round" }),
         React.createElement("circle", { cx: "45", cy: "44", r: "6", fill: "currentColor" }),
         React.createElement("circle", { cx: "145", cy: "44", r: "6", fill: "currentColor" })),
-    React.createElement("text", { x: "95", y: "36", textAnchor: "middle", fontSize: "30", fontWeight: "bold", className: "text-primary", fill: "currentColor", fontFamily: "'Helvetica Neue', Helvetica, Arial, sans-serif" }, "Fairf\u00E0re")));
+    React.createElement("text", { x: "95", y: "36", textAnchor: "middle", fontSize: "30", fontWeight: "bold", className: "text-primary", fill: "currentColor", fontFamily: "'Helvetica Neue', Helvetica, Arial, sans-serif" }, "Fairfàre")));
 const HamburgerIcon = () => (React.createElement("svg", { className: "h-8 w-8 text-primary", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor", strokeWidth: "2.5" },
     React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M4 6h16M4 12h16M4 18h16" })));
 const Header = ({ onToggleSidebar, isSidebarOpen }) => {
@@ -422,7 +452,7 @@ const Header = ({ onToggleSidebar, isSidebarOpen }) => {
 };
 
 // --- components/Sidebar.tsx ---
-const Sidebar = ({ isOpen, onClose, onAddTipClick, currentUser, onLogout }) => {
+const Sidebar = ({ isOpen, onClose, onAddTipClick, currentUser, onLogout, onOpenAuthModal }) => {
     return (React.createElement("aside", { id: "sidebar", className: `fixed top-0 left-0 h-full w-64 bg-surface shadow-lg z-30 transform transition-transform duration-300 ease-in-out flex flex-col ${isOpen ? 'translate-x-0' : '-translate-x-full'}`, "aria-hidden": !isOpen },
         React.createElement("div", { className: "p-4 flex justify-between items-center space-x-3 border-b border-gray-200 min-h-[76px]" },
             React.createElement("svg", { className: "h-10 w-auto", viewBox: "0 0 200 50", xmlns: "http://www.w3.org/2000/svg" },
@@ -431,7 +461,7 @@ const Sidebar = ({ isOpen, onClose, onAddTipClick, currentUser, onLogout }) => {
                     React.createElement("path", { d: "M18,18 C40,5 150,5 172,18", fill: "none", stroke: "currentColor", strokeWidth: "4", strokeLinecap: "round" }),
                     React.createElement("circle", { cx: "45", cy: "44", r: "6", fill: "currentColor" }),
                     React.createElement("circle", { cx: "145", cy: "44", r: "6", fill: "currentColor" })),
-                React.createElement("text", { x: "95", y: "36", textAnchor: "middle", fontSize: "30", fontWeight: "bold", className: "text-primary", fill: "currentColor", fontFamily: "'Helvetica Neue', Helvetica, Arial, sans-serif" }, "Fairf\u00E0re")),
+                React.createElement("text", { x: "95", y: "36", textAnchor: "middle", fontSize: "30", fontWeight: "bold", className: "text-primary", fill: "currentColor", fontFamily: "'Helvetica Neue', Helvetica, Arial, sans-serif" }, "Fairfàre")),
             React.createElement("button", { onClick: onClose, className: "text-gray-400 hover:text-gray-600 p-1 rounded-full", "aria-label": "Close sidebar" },
                 React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-6 w-6", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor" },
                     React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M6 18L18 6M6 6l12 12" })))),
@@ -446,8 +476,14 @@ const Sidebar = ({ isOpen, onClose, onAddTipClick, currentUser, onLogout }) => {
             React.createElement("img", { src: currentUser.picture, alt: currentUser.name, className: "h-10 w-10 rounded-full", referrerPolicy: "no-referrer" }),
             React.createElement("div", { className: "overflow-hidden" },
                 React.createElement("p", { className: "font-semibold text-text-primary truncate" }, currentUser.name),
-                React.createElement("button", { onClick: onLogout, className: "text-sm text-text-secondary hover:text-primary font-medium" }, "Logout")))) : (React.createElement("div", null,
-            React.createElement("p", { className: "text-sm text-text-secondary mb-2" }, "Log in to contribute."),
+                React.createElement("button", { onClick: onLogout, className: "text-sm text-text-secondary hover:text-primary font-medium" }, "Logout")))) : (React.createElement("div", { className: "space-y-3" },
+            React.createElement("p", { className: "text-sm text-text-secondary mb-2 text-center" }, "Join the community to contribute."),
+            React.createElement("button", { onClick: () => onOpenAuthModal('login'), className: "w-full text-center font-semibold py-2 px-4 rounded-lg bg-secondary text-white hover:bg-teal-700 transition" }, "Sign In with Email"),
+            React.createElement("button", { onClick: () => onOpenAuthModal('register'), className: "w-full text-center font-semibold py-2 px-4 rounded-lg bg-gray-200 text-text-primary hover:bg-gray-300 transition" }, "Register"),
+            React.createElement("div", { className: "relative flex py-2 items-center" },
+                React.createElement("div", { className: "flex-grow border-t border-gray-300" }),
+                React.createElement("span", { className: "flex-shrink mx-4 text-xs text-gray-400" }, "OR"),
+                React.createElement("div", { className: "flex-grow border-t border-gray-300" })),
             React.createElement("div", { id: "signInDivSidebar" }))))));
 };
 
@@ -469,7 +505,7 @@ const SearchBar = ({ onSearch }) => {
             React.createElement("div", { className: "absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none" },
                 React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-6 w-6 text-gray-400", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor" },
                     React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" }))),
-            React.createElement("button", { type: "submit", className: "absolute inset-y-0 right-0 px-6 py-2 m-2 bg-primary text-white font-semibold rounded-full hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary transition duration-200" }, "Search"))));
+            React.createElement("button", { type: "submit", className: "absolute inset-y-0 right-0 px-6 py-2 m-2 bg-primary text-white font-semibold rounded-full hover:bg-orange-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary transition duration-200" }, "Search"))));
 };
 
 // --- components/TipCard.tsx ---
@@ -495,7 +531,7 @@ const TipCard = forwardRef(({ tip, onRatingChange, onHover, isActive }, ref) => 
                         React.createElement("div", null,
                             React.createElement("h3", { className: "text-xl font-bold text-text-primary" },
                                 tip.origin,
-                                " \u2192 ",
+                                " → ",
                                 tip.destination),
                             React.createElement("p", { className: "text-sm text-text-secondary font-medium" }, tip.transportMode)))),
                 React.createElement("div", { className: "flex flex-col items-center space-y-1" },
@@ -771,7 +807,7 @@ const TipForm = ({ onClose, onSubmit, currentUser }) => {
                 React.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-4" },
                     React.createElement("div", null,
                         React.createElement("label", { htmlFor: "estimatedCost", className: "block text-sm font-medium text-text-secondary mb-1" }, "Estimated Cost"),
-                        React.createElement("input", { type: "text", id: "estimatedCost", value: estimatedCost, onChange: e => setEstimatedCost(e.target.value), placeholder: "e.g., \u20B9100-150", required: true, className: "w-full p-2 border border-gray-300 rounded-md focus:ring-primary focus:border-primary" })),
+                        React.createElement("input", { type: "text", id: "estimatedCost", value: estimatedCost, onChange: e => setEstimatedCost(e.target.value), placeholder: "e.g., ₹100-150", required: true, className: "w-full p-2 border border-gray-300 rounded-md focus:ring-primary focus:border-primary" })),
                     React.createElement("div", null,
                         React.createElement("label", { htmlFor: "estimatedTime", className: "block text-sm font-medium text-text-secondary mb-1" }, "Estimated Time"),
                         React.createElement("input", { type: "text", id: "estimatedTime", value: estimatedTime, onChange: e => setEstimatedTime(e.target.value), placeholder: "e.g., 20 mins", required: true, className: "w-full p-2 border border-gray-300 rounded-md focus:ring-primary focus:border-primary" }))),
@@ -785,7 +821,7 @@ const TipForm = ({ onClose, onSubmit, currentUser }) => {
 
 // --- components/ChatButton.tsx ---
 const ChatButton = ({ onClick }) => {
-    return (React.createElement("button", { onClick: onClick, className: "fixed bottom-6 right-6 bg-primary text-white rounded-full p-4 shadow-lg hover:bg-blue-700 transition-transform transform hover:scale-110 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary z-20", "aria-label": "Open live chat" },
+    return (React.createElement("button", { onClick: onClick, className: "fixed bottom-6 right-6 bg-primary text-white rounded-full p-4 shadow-lg hover:bg-orange-600 transition-transform transform hover:scale-110 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary z-20", "aria-label": "Open live chat" },
         React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-8 w-8", viewBox: "0 0 20 20", fill: "currentColor" },
             React.createElement("path", { fillRule: "evenodd", d: "M18 10c0 3.866-3.582 7-8 7a8.839 8.839 0 01-4.082-.973l-1.12.373a1 1 0 01-1.13-1.13l.374-1.12A8.839 8.839 0 012 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM4.717 14.155A6.974 6.974 0 004 10.5c0-2.21.99-4.2 2.585-5.5H7.5a1 1 0 010 2H5.195a4.978 4.978 0 00-1.47 2.5H4.5a1 1 0 010 2h-.775a4.98 4.98 0 001.037 2.086l.955-.318zM12.5 7h-5a1 1 0 110-2h5a1 1 0 110 2zm0 4h-5a1 1 0 110-2h5a1 1 0 110 2z", clipRule: "evenodd" }))));
 };
@@ -877,6 +913,85 @@ const ChatWindow = ({ isOpen, onClose, tips }) => {
                         React.createElement("path", { d: "M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" })))))));
 };
 
+// --- components/AuthModal.tsx ---
+const AuthModal = ({ mode, onClose, onAuthSuccess }) => {
+    const [currentMode, setCurrentMode] = useState(mode); // 'login' or 'register'
+    const [name, setName] = useState('');
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [confirmPassword, setConfirmPassword] = useState('');
+    const [error, setError] = useState(null);
+    const [isLoading, setIsLoading] = useState(false);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setError(null);
+        setIsLoading(true);
+
+        if (currentMode === 'register') {
+            if (password !== confirmPassword) {
+                setError("Passwords do not match.");
+                setIsLoading(false);
+                return;
+            }
+            try {
+                const { user, token } = await registerUser(name, email, password);
+                onAuthSuccess({ user, token });
+            } catch (err) {
+                setError(err.message);
+            }
+        } else { // Login mode
+            try {
+                const { user, token } = await loginWithEmail(email, password);
+                onAuthSuccess({ user, token });
+            } catch (err) {
+                setError(err.message);
+            }
+        }
+        setIsLoading(false);
+    };
+    
+    const switchMode = () => {
+        setError(null);
+        setCurrentMode(prev => prev === 'login' ? 'register' : 'login');
+    }
+
+    return (
+        React.createElement("div", { className: "fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4", role: "dialog", "aria-modal": "true", "aria-labelledby": "auth-title" },
+            React.createElement("div", { className: "bg-surface rounded-xl shadow-2xl p-6 md:p-8 w-full max-w-md" },
+                React.createElement("div", { className: "flex justify-between items-center mb-6" },
+                    React.createElement("h2", { id: "auth-title", className: "text-2xl font-bold text-primary" }, currentMode === 'login' ? "Sign In" : "Register"),
+                    React.createElement("button", { onClick: onClose, className: "text-gray-400 hover:text-gray-600", "aria-label": "Close form" },
+                        React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-6 w-6", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor" },
+                            React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M6 18L18 6M6 6l12 12" })))),
+                error && (React.createElement("div", { className: "bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-md relative mb-4", role: "alert" },
+                    React.createElement("span", { className: "block sm:inline" }, error))),
+                React.createElement("form", { onSubmit: handleSubmit, className: "space-y-4" },
+                    currentMode === 'register' && React.createElement("div", null,
+                        React.createElement("label", { htmlFor: "name", className: "block text-sm font-medium text-text-secondary mb-1" }, "Full Name"),
+                        React.createElement("input", { type: "text", id: "name", value: name, onChange: e => setName(e.target.value), required: true, className: "w-full p-2 border border-gray-300 rounded-md focus:ring-primary focus:border-primary" })),
+                    React.createElement("div", null,
+                        React.createElement("label", { htmlFor: "email", className: "block text-sm font-medium text-text-secondary mb-1" }, "Email Address"),
+                        React.createElement("input", { type: "email", id: "email", value: email, onChange: e => setEmail(e.target.value), required: true, className: "w-full p-2 border border-gray-300 rounded-md focus:ring-primary focus:border-primary" })),
+                    React.createElement("div", null,
+                        React.createElement("label", { htmlFor: "password", className: "block text-sm font-medium text-text-secondary mb-1" }, "Password"),
+                        React.createElement("input", { type: "password", id: "password", value: password, onChange: e => setPassword(e.target.value), required: true, className: "w-full p-2 border border-gray-300 rounded-md focus:ring-primary focus:border-primary" })),
+                    currentMode === 'register' && React.createElement("div", null,
+                        React.createElement("label", { htmlFor: "confirmPassword", className: "block text-sm font-medium text-text-secondary mb-1" }, "Confirm Password"),
+                        React.createElement("input", { type: "password", id: "confirmPassword", value: confirmPassword, onChange: e => setConfirmPassword(e.target.value), required: true, className: "w-full p-2 border border-gray-300 rounded-md focus:ring-primary focus:border-primary" })),
+                    React.createElement("div", { className: "pt-2" },
+                        React.createElement("button", { type: "submit", disabled: isLoading, className: "w-full px-6 py-3 bg-primary text-white font-semibold rounded-md hover:bg-orange-600 disabled:bg-gray-400 disabled:cursor-not-allowed" }, 
+                            isLoading ? 'Processing...' : (currentMode === 'login' ? 'Sign In' : 'Create Account')
+                        ))),
+                React.createElement("div", { className: "text-center mt-4" },
+                    React.createElement("button", { onClick: switchMode, className: "text-sm text-secondary hover:underline" }, 
+                        currentMode === 'login' ? "Don't have an account? Register" : "Already have an account? Sign In"
+                    )
+                )
+            )
+        )
+    );
+};
 
 // ===== From App.tsx (now the main app logic) =====
 const Hero = () => {
@@ -884,8 +999,8 @@ const Hero = () => {
         React.createElement("div", { className: "absolute top-0 left-0 w-full h-full z-0" },
             React.createElement("div", { className: "absolute top-1/4 -left-1/4 w-72 h-72 md:w-96 md:h-96 bg-white rounded-full opacity-30 filter blur-xl animate-cloud-move" }),
             React.createElement("div", { className: "absolute top-1/3 -right-1/4 w-72 h-72 md:w-96 md:h-96 bg-white rounded-full opacity-20 filter blur-2xl animate-cloud-move-delay" }),
-            React.createElement("div", { className: "absolute top-1/4 right-full text-3xl md:text-4xl animate-vehicle-move opacity-70" }, "\uD83D\uDEFA"),
-            React.createElement("div", { className: "absolute top-1/3 right-full text-xl md:text-2xl animate-vehicle-move-delay opacity-60" }, "\uD83D\uDE86")),
+            React.createElement("div", { className: "absolute top-1/4 right-full text-3xl md:text-4xl animate-vehicle-move opacity-70" }, "🛺"),
+            React.createElement("div", { className: "absolute top-1/3 right-full text-xl md:text-2xl animate-vehicle-move-delay opacity-60" }, "🚆")),
         React.createElement("div", { className: "relative z-10" },
             React.createElement("h1", { className: "text-4xl md:text-5xl font-extrabold text-primary mb-2" }, "Namaste! Your Guide to Navigating India"),
             React.createElement("p", { className: "text-lg text-text-secondary max-w-3xl mx-auto" }, "Fair fares and local secrets, from Delhi to Mumbai. Travel with confidence using our community-powered app."))));
@@ -902,8 +1017,9 @@ const App = () => {
     const [isChatOpen, setIsChatOpen] = useState(false);
     const [activeTipId, setActiveTipId] = useState(null);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+    const [authModal, setAuthModal] = useState({ isOpen: false, mode: 'login' });
     const tipRefs = useRef([]);
-    const GOOGLE_CLIENT_ID = '699469816762-u4ujis22t2p1ojqag8gvi8s0c5utmfpr.apps.googleusercontent.com';
+    const GOOGLE_CLIENT_ID = '538610246370-04j4u9jdns39e5ne5b9p99jjjvv7fduc.apps.googleusercontent.com';
     useEffect(() => {
         const storedUser = localStorage.getItem('fairfare-user');
         const storedToken = localStorage.getItem('session-token');
@@ -961,12 +1077,16 @@ const App = () => {
             channel.close();
         };
     }, []);
+    const handleAuthSuccess = ({ user, token }) => {
+        setCurrentUser(user);
+        localStorage.setItem('fairfare-user', JSON.stringify(user));
+        localStorage.setItem('session-token', token);
+        setAuthModal({ isOpen: false, mode: 'login' });
+    };
     const handleLoginSuccess = async (response) => {
         try {
             const { user, token } = await loginWithGoogle(response.credential);
-            setCurrentUser(user);
-            localStorage.setItem('fairfare-user', JSON.stringify(user));
-            localStorage.setItem('session-token', token);
+            handleAuthSuccess({user, token});
         }
         catch (error) {
             console.error("Authentication with backend failed:", error);
@@ -1003,7 +1123,7 @@ const App = () => {
             if (signInDiv) {
                 signInDiv.innerHTML = '';
                 try {
-                    window.google.accounts.id.renderButton(signInDiv, { theme: 'outline', size: 'large', type: 'standard' });
+                    window.google.accounts.id.renderButton(signInDiv, { theme: 'outline', size: 'large', type: 'standard', width: '223' });
                 }
                 catch (error) {
                     console.error("Error rendering Google Sign-In button:", error);
@@ -1022,6 +1142,10 @@ const App = () => {
     const handleAddTipClick = () => {
         setIsSidebarOpen(false);
         setIsFormOpen(true);
+    };
+    const handleOpenAuthModal = (mode) => {
+        setAuthModal({ isOpen: true, mode });
+        setIsSidebarOpen(false);
     };
     const filteredTips = useMemo(() => {
         if (!searchTerm)
@@ -1085,7 +1209,7 @@ const App = () => {
         }
     };
     return (React.createElement("div", { className: "min-h-screen bg-background text-text-primary font-sans relative overflow-x-hidden" },
-        React.createElement(Sidebar, { isOpen: isSidebarOpen, onClose: () => setIsSidebarOpen(false), onAddTipClick: handleAddTipClick, currentUser: currentUser, onLogout: handleLogout }),
+        React.createElement(Sidebar, { isOpen: isSidebarOpen, onClose: () => setIsSidebarOpen(false), onAddTipClick: handleAddTipClick, currentUser: currentUser, onLogout: handleLogout, onOpenAuthModal: handleOpenAuthModal }),
         isSidebarOpen && (React.createElement("div", { className: "fixed inset-0 bg-black bg-opacity-50 z-20", onClick: () => setIsSidebarOpen(false), "aria-hidden": "true" })),
         React.createElement("div", { className: `transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-64' : 'translate-x-0'}` },
             React.createElement(Header, { onToggleSidebar: () => setIsSidebarOpen(prev => !prev), isSidebarOpen: isSidebarOpen }),
@@ -1103,6 +1227,7 @@ const App = () => {
                         React.createElement(Leaderboard, { users: users }),
                         React.createElement(MapComponent, { tips: tips, activeTipId: activeTipId, onMarkerClick: handleMarkerClick })))))),
         isFormOpen && (React.createElement(TipForm, { onClose: () => setIsFormOpen(false), onSubmit: handleAddTip, currentUser: currentUser })),
+        authModal.isOpen && React.createElement(AuthModal, { mode: authModal.mode, onClose: () => setAuthModal({isOpen: false, mode: 'login'}), onAuthSuccess: handleAuthSuccess }),
         React.createElement(ChatButton, { onClick: () => setIsChatOpen(true) }),
         React.createElement(ChatWindow, { isOpen: isChatOpen, onClose: () => setIsChatOpen(false), tips: filteredTips })));
 };
