@@ -208,8 +208,7 @@
 {
   "imports": {
     "react": "https://esm.sh/react@^19.1.1",
-    "react-dom/": "https://esm.sh/react-dom@^19.1.1/",
-    "react/": "https://esm.sh/react@^19.1.1/",
+    "react-dom/client": "https://esm.sh/react-dom@^19.1.1/client",
     "@google/genai": "https://esm.sh/@google/genai@^1.15.0"
   }
 }
@@ -217,6 +216,898 @@
 </head>
   <body class="bg-background">
     <div id="root"></div>
-    <script type="text/babel" data-type="module" src="./index.tsx"></script>
+    <script type="text/babel" data-presets="react,typescript" data-type="module">
+// BUNDLED CODE - ALL .TSX AND .TS FILES ARE MERGED HERE FOR STATIC HOSTING
+
+// ===== From types.ts =====
+var TransportMode;
+(function (TransportMode) {
+    TransportMode["Taxi"] = "Taxi";
+    TransportMode["Bus"] = "Bus";
+    TransportMode["Metro"] = "Metro";
+    TransportMode["AutoRickshaw"] = "AutoRickshaw";
+    TransportMode["Train"] = "Train";
+    TransportMode["Ferry"] = "Ferry";
+})(TransportMode || (TransportMode = {}));
+
+// ===== From services/geminiService.ts =====
+import { GoogleGenAI, Type } from "@google/genai";
+
+if (!process.env.API_KEY) {
+    throw new Error("API_KEY environment variable not set");
+}
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const getCoordinatesForAddress = async (address) => {
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: `Find the geographic coordinates (latitude and longitude) for this location in India: ${address}.`,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        lat: { type: Type.NUMBER, description: "Latitude" },
+                        lng: { type: Type.NUMBER, description: "Longitude" },
+                    },
+                    required: ["lat", "lng"],
+                },
+            },
+        });
+        const jsonString = response.text.trim();
+        const coordinates = JSON.parse(jsonString);
+        if (coordinates && typeof coordinates.lat === 'number' && typeof coordinates.lng === 'number') {
+            return coordinates;
+        }
+        console.warn("Failed to parse coordinates from Gemini response:", jsonString);
+        return null;
+    }
+    catch (error) {
+        console.error("Error fetching coordinates from Gemini API:", error);
+        return null;
+    }
+};
+async function* getAiChatResponseStream(message, contextTips) {
+    const systemInstruction = `You are FareGuide, an expert AI travel assistant for India. 
+    Your goal is to provide helpful, safe, and budget-conscious travel advice.
+    - Be friendly, clear, and encouraging.
+    - Use the provided "Community Tips" as your primary source of information when relevant. Reference them directly if a user's question is about a specific trip shown.
+    - If the user asks a general question, use your own knowledge but keep the advice grounded and practical for a traveler in India.
+    - Do not make up fares or routes; if you don't know, say so.
+    - Format responses with simple markdown (bolding with **text**).`;
+    const tipsContext = contextTips.length > 0 ? `
+---
+**Community Tips on Screen:**
+${contextTips.map(tip => `
+- **From:** ${tip.origin}
+  **To:** ${tip.destination}
+  **Mode:** ${tip.transportMode}
+  **Cost:** ${tip.estimatedCost}
+  **Advice:** ${tip.advice}
+`).join('\n')}
+---
+` : "There are no specific tips on the screen right now.";
+    const contents = `${tipsContext}\n\n**User's Question:** ${message}`;
+    try {
+        const response = await ai.models.generateContentStream({
+            model: "gemini-2.5-flash",
+            contents: contents,
+            config: {
+                systemInstruction: systemInstruction,
+            },
+        });
+        for await (const chunk of response) {
+            yield chunk.text;
+        }
+    }
+    catch (error) {
+        console.error("Error streaming chat response from Gemini API:", error);
+        yield "I'm sorry, I encountered an error while trying to respond. Please check the connection and try again.";
+    }
+}
+
+// ===== From services/apiService.ts =====
+const getAuthToken = () => {
+    return localStorage.getItem('session-token');
+};
+const getTips = async () => {
+    console.log("Fetching initial tips...");
+    return [
+        {
+            id: 1,
+            origin: "Indira Gandhi International Airport (DEL)",
+            destination: "New Delhi Metro Station",
+            transportMode: TransportMode.Metro,
+            estimatedCost: "₹60",
+            estimatedTime: "25 minutes",
+            advice: "Use the Airport Express Line (Orange Line) for a fast and cheap ride to the city center. It's much better than dealing with taxi or auto-rickshaw touts at the airport.",
+            user: { username: "MetroManMohan", score: 180, badges: ["Metro Master", "Top Contributor"] },
+            rating: 32,
+            coordinates: { lat: 28.5562, lng: 77.1000 }
+        },
+        {
+            id: 2,
+            origin: "Connaught Place",
+            destination: "Chandni Chowk",
+            transportMode: TransportMode.AutoRickshaw,
+            estimatedCost: "₹80-120",
+            estimatedTime: "15-20 minutes",
+            advice: "Negotiate the fare *before* getting into an auto-rickshaw, or use a ride-hailing app like Uber or Ola to book one for a fixed price. The traffic can be heavy, but it's a classic Delhi experience.",
+            user: { username: "DelhiExplorerPriya", score: 110, badges: ["Bargain Hunter"] },
+            rating: 25,
+            coordinates: { lat: 28.6304, lng: 77.2177 }
+        },
+        {
+            id: 3,
+            origin: "Central Delhi",
+            destination: "Various Locations",
+            transportMode: TransportMode.Bus,
+            estimatedCost: "₹5-25",
+            estimatedTime: "Varies",
+            advice: "Delhi's DTC buses are incredibly cheap, especially the AC ones. Use a transit app like Google Maps to figure out routes. It's a great way to see the city like a local.",
+            user: { username: "LocalSaverRavi", score: 90, badges: ["Frugal Traveler", "Route Wizard"] },
+            rating: 18,
+            coordinates: { lat: 28.6139, lng: 77.2090 }
+        },
+    ];
+};
+const addTip = async (tipData) => {
+    console.log("Submitting new tip:", tipData);
+    const token = getAuthToken();
+    if (!token)
+        throw new Error("Authentication required to add a tip.");
+    const loggedInUser = JSON.parse(localStorage.getItem('fairfare-user') || '{}');
+    const fetchedCoordinates = await getCoordinatesForAddress(tipData.origin);
+    const newTip = {
+        ...tipData,
+        id: Date.now(),
+        rating: 0,
+        user: { username: loggedInUser.name || "Anonymous", score: 1, badges: ["New Contributor"] },
+        ...(fetchedCoordinates && { coordinates: fetchedCoordinates })
+    };
+    const channel = new BroadcastChannel('fairfare_tips');
+    channel.postMessage(newTip);
+    channel.close();
+    return newTip;
+};
+const updateRating = async (tipId, change) => {
+    console.log(`Updating rating for tip ${tipId} by ${change}`);
+    await new Promise(res => setTimeout(res, 200)); // Simulate network delay
+    return;
+};
+async function* postChatMessageStream(message, contextTips) {
+    console.log("Streaming chat message from backend:", message);
+    yield* getAiChatResponseStream(message, contextTips);
+}
+const loginWithGoogle = async (credential) => {
+    console.log("Sending Google credential to backend for verification...");
+    await new Promise(res => setTimeout(res, 400)); // Simulate network delay
+    const decoded = JSON.parse(atob(credential.split('.')[1]));
+    const user = {
+        name: decoded.name,
+        email: decoded.email,
+        picture: decoded.picture
+    };
+    const token = "backend-issued-secure-session-token-placeholder";
+    return { user, token };
+};
+
+// ===== From React and components =====
+import React, { useState, useEffect, useMemo, useRef, createRef, forwardRef, useCallback } from 'react';
+import ReactDOM from 'react-dom/client';
+
+// --- components/Header.tsx ---
+const FairfareLogo = () => (React.createElement("svg", { className: "h-10 w-auto", viewBox: "0 0 200 50", xmlns: "http://www.w3.org/2000/svg" },
+    React.createElement("g", { className: "text-primary", fill: "currentColor" },
+        React.createElement("path", { d: "M12,20 h15 l10,18 h115 l10,-18 h15 l10,12 v10 h-180 v-10 Z", opacity: "0.8" }),
+        React.createElement("path", { d: "M18,18 C40,5 150,5 172,18", fill: "none", stroke: "currentColor", strokeWidth: "4", strokeLinecap: "round" }),
+        React.createElement("circle", { cx: "45", cy: "44", r: "6", fill: "currentColor" }),
+        React.createElement("circle", { cx: "145", cy: "44", r: "6", fill: "currentColor" })),
+    React.createElement("text", { x: "95", y: "36", textAnchor: "middle", fontSize: "30", fontWeight: "bold", className: "text-primary", fill: "currentColor", fontFamily: "'Helvetica Neue', Helvetica, Arial, sans-serif" }, "Fairf\u00E0re")));
+const HamburgerIcon = () => (React.createElement("svg", { className: "h-8 w-8 text-primary", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor", strokeWidth: "2.5" },
+    React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M4 6h16M4 12h16M4 18h16" })));
+const Header = ({ onToggleSidebar, isSidebarOpen }) => {
+    const [isHovered, setIsHovered] = useState(false);
+    return (React.createElement("header", { className: "bg-surface shadow-md sticky top-0 z-30" },
+        React.createElement("div", { className: "container mx-auto px-4 sm:px-6 lg:px-8" },
+            React.createElement("div", { className: "flex justify-between items-center py-4 min-h-[76px]" },
+                React.createElement("button", { className: "flex items-center justify-center cursor-pointer w-40 h-10", onClick: onToggleSidebar, onMouseEnter: () => setIsHovered(true), onMouseLeave: () => setIsHovered(false), "aria-label": isSidebarOpen ? 'Close navigation menu' : 'Open navigation menu', "aria-expanded": isSidebarOpen, "aria-controls": "sidebar" }, (isHovered || isSidebarOpen) ? React.createElement(HamburgerIcon, null) : React.createElement(FairfareLogo, null))))));
+};
+
+// --- components/Sidebar.tsx ---
+const Sidebar = ({ isOpen, onClose, onAddTipClick, currentUser, onLogout }) => {
+    return (React.createElement("aside", { id: "sidebar", className: `fixed top-0 left-0 h-full w-64 bg-surface shadow-lg z-30 transform transition-transform duration-300 ease-in-out flex flex-col ${isOpen ? 'translate-x-0' : '-translate-x-full'}`, "aria-hidden": !isOpen },
+        React.createElement("div", { className: "p-4 flex justify-between items-center space-x-3 border-b border-gray-200 min-h-[76px]" },
+            React.createElement("svg", { className: "h-10 w-auto", viewBox: "0 0 200 50", xmlns: "http://www.w3.org/2000/svg" },
+                React.createElement("g", { className: "text-primary", fill: "currentColor" },
+                    React.createElement("path", { d: "M12,20 h15 l10,18 h115 l10,-18 h15 l10,12 v10 h-180 v-10 Z", opacity: "0.8" }),
+                    React.createElement("path", { d: "M18,18 C40,5 150,5 172,18", fill: "none", stroke: "currentColor", strokeWidth: "4", strokeLinecap: "round" }),
+                    React.createElement("circle", { cx: "45", cy: "44", r: "6", fill: "currentColor" }),
+                    React.createElement("circle", { cx: "145", cy: "44", r: "6", fill: "currentColor" })),
+                React.createElement("text", { x: "95", y: "36", textAnchor: "middle", fontSize: "30", fontWeight: "bold", className: "text-primary", fill: "currentColor", fontFamily: "'Helvetica Neue', Helvetica, Arial, sans-serif" }, "Fairf\u00E0re")),
+            React.createElement("button", { onClick: onClose, className: "text-gray-400 hover:text-gray-600 p-1 rounded-full", "aria-label": "Close sidebar" },
+                React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-6 w-6", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor" },
+                    React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M6 18L18 6M6 6l12 12" })))),
+        React.createElement("div", { className: "flex-grow p-5 overflow-y-auto" },
+            React.createElement("button", { onClick: onAddTipClick, disabled: !currentUser, className: `w-full font-bold py-3 px-4 rounded-full transition duration-300 ease-in-out flex items-center justify-center space-x-2 mb-6 ${currentUser
+                    ? 'bg-primary text-white transform hover:scale-105'
+                    : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`, title: currentUser ? "Add a new tip" : "You must be logged in to add a tip" },
+                React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-5 w-5", viewBox: "0 0 20 20", fill: "currentColor" },
+                    React.createElement("path", { fillRule: "evenodd", d: "M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z", clipRule: "evenodd" })),
+                React.createElement("span", null, "Add New Tip"))),
+        React.createElement("div", { className: "p-5 border-t border-gray-200" }, currentUser ? (React.createElement("div", { className: "flex items-center space-x-3" },
+            React.createElement("img", { src: currentUser.picture, alt: currentUser.name, className: "h-10 w-10 rounded-full", referrerPolicy: "no-referrer" }),
+            React.createElement("div", { className: "overflow-hidden" },
+                React.createElement("p", { className: "font-semibold text-text-primary truncate" }, currentUser.name),
+                React.createElement("button", { onClick: onLogout, className: "text-sm text-text-secondary hover:text-primary font-medium" }, "Logout")))) : (React.createElement("div", null,
+            React.createElement("p", { className: "text-sm text-text-secondary mb-2" }, "Log in to contribute."),
+            React.createElement("div", { id: "signInDivSidebar" }))))));
+};
+
+// --- components/SearchBar.tsx ---
+const SearchBar = ({ onSearch }) => {
+    const [query, setQuery] = useState('');
+    const handleSearch = (e) => {
+        e.preventDefault();
+        onSearch(query);
+    };
+    return (React.createElement("form", { onSubmit: handleSearch, className: "mb-8 max-w-2xl mx-auto", role: "search" },
+        React.createElement("div", { className: "relative" },
+            React.createElement("input", { type: "search", value: query, onChange: (e) => {
+                    setQuery(e.target.value);
+                    if (e.target.value === '') {
+                        onSearch('');
+                    }
+                }, placeholder: "Search by origin, destination, or keyword...", "aria-label": "Search for transportation tips", className: "w-full p-4 pl-12 text-lg border-2 border-gray-200 rounded-full focus:ring-primary focus:border-primary transition duration-200" }),
+            React.createElement("div", { className: "absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none" },
+                React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-6 w-6 text-gray-400", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor" },
+                    React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" }))),
+            React.createElement("button", { type: "submit", className: "absolute inset-y-0 right-0 px-6 py-2 m-2 bg-primary text-white font-semibold rounded-full hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary transition duration-200" }, "Search"))));
+};
+
+// --- components/TipCard.tsx ---
+const getTransportIcon = (mode) => {
+    switch (mode) {
+        case TransportMode.Taxi: return '🚕';
+        case TransportMode.Bus: return '🚌';
+        case TransportMode.Metro: return '🚇';
+        case TransportMode.AutoRickshaw: return '🛺';
+        case TransportMode.Train: return '🚆';
+        case TransportMode.Ferry: return '⛴️';
+        default: return '📍';
+    }
+};
+const TipCard = forwardRef(({ tip, onRatingChange, onHover, isActive }, ref) => {
+    const cardClasses = `bg-surface rounded-xl shadow-lg overflow-hidden transition-all duration-300 transform hover:-translate-y-1 hover:shadow-2xl ${isActive ? 'ring-2 ring-primary ring-offset-2' : ''}`;
+    return (React.createElement("article", { className: cardClasses, onMouseEnter: () => onHover(tip.id), onMouseLeave: () => onHover(null), ref: ref, tabIndex: 0 },
+        React.createElement("div", { className: "p-6" },
+            React.createElement("div", { className: "flex justify-between items-start" },
+                React.createElement("div", null,
+                    React.createElement("div", { className: "flex items-center space-x-3 mb-2" },
+                        React.createElement("span", { className: "text-3xl", "aria-hidden": "true" }, getTransportIcon(tip.transportMode)),
+                        React.createElement("div", null,
+                            React.createElement("h3", { className: "text-xl font-bold text-text-primary" },
+                                tip.origin,
+                                " \u2192 ",
+                                tip.destination),
+                            React.createElement("p", { className: "text-sm text-text-secondary font-medium" }, tip.transportMode)))),
+                React.createElement("div", { className: "flex flex-col items-center space-y-1" },
+                    React.createElement("button", { onClick: () => onRatingChange(tip.id, 1), className: "p-1 rounded-full text-gray-400 hover:bg-green-100 hover:text-green-600 transition", "aria-label": "Upvote tip" },
+                        React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-6 w-6", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor" },
+                            React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M5 15l7-7 7 7" }))),
+                    React.createElement("span", { className: "font-bold text-lg text-secondary" }, tip.rating),
+                    React.createElement("button", { onClick: () => onRatingChange(tip.id, -1), className: "p-1 rounded-full text-gray-400 hover:bg-red-100 hover:text-red-600 transition", "aria-label": "Downvote tip" },
+                        React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-6 w-6", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor" },
+                            React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M19 9l-7 7-7-7" }))))),
+            React.createElement("div", { className: "grid grid-cols-2 gap-4 my-4 text-center" },
+                React.createElement("div", { className: "bg-background p-3 rounded-lg" },
+                    React.createElement("p", { className: "text-sm text-text-secondary" }, "Cost"),
+                    React.createElement("p", { className: "font-bold text-lg text-secondary" }, tip.estimatedCost)),
+                React.createElement("div", { className: "bg-background p-3 rounded-lg" },
+                    React.createElement("p", { className: "text-sm text-text-secondary" }, "Time"),
+                    React.createElement("p", { className: "font-bold text-lg text-accent" }, tip.estimatedTime))),
+            React.createElement("p", { className: "text-text-secondary mt-4 mb-4 bg-orange-50 p-4 rounded-md border-l-4 border-orange-300" }, tip.advice),
+            React.createElement("div", { className: "border-t border-gray-200 pt-4 mt-4" },
+                React.createElement("div", { className: "flex items-center justify-between" },
+                    React.createElement("div", null,
+                        React.createElement("p", { className: "text-sm font-semibold text-text-primary" },
+                            "Shared by: ",
+                            tip.user.username),
+                        React.createElement("div", { className: "flex items-center space-x-1 mt-1" }, tip.user.badges.map(badge => (React.createElement("span", { key: badge, className: "px-2 py-0.5 text-xs font-semibold text-primary bg-primary/10 rounded-full" }, badge))))),
+                    React.createElement("div", { className: "text-right" },
+                        React.createElement("p", { className: "text-sm font-semibold text-text-primary" }, "Score"),
+                        React.createElement("p", { className: "font-bold text-green-500" }, tip.user.score)))))));
+});
+
+// --- components/Leaderboard.tsx ---
+const getTrophy = (index) => {
+    if (index === 0)
+        return '🥇';
+    if (index === 1)
+        return '🥈';
+    if (index === 2)
+        return '🥉';
+    return `${index + 1}.`;
+};
+const Leaderboard = ({ users }) => {
+    return (React.createElement("div", { className: "bg-surface rounded-xl shadow-lg p-6" },
+        React.createElement("h3", { className: "text-xl font-bold text-text-primary mb-4" }, "Top Contributors"),
+        React.createElement("ul", { className: "space-y-4" }, users.slice(0, 5).map((user, index) => (React.createElement("li", { key: user.username, className: "flex items-center justify-between transition-colors hover:bg-gray-50 p-2 rounded-md" },
+            React.createElement("div", { className: "flex items-center" },
+                React.createElement("span", { className: "text-lg font-bold w-8 text-center" }, getTrophy(index)),
+                React.createElement("div", null,
+                    React.createElement("p", { className: "font-semibold text-text-primary" }, user.username),
+                    React.createElement("div", { className: "flex flex-wrap gap-1 mt-1" }, user.badges.map(badge => (React.createElement("span", { key: badge, className: "px-2 py-0.5 text-xs font-semibold text-accent bg-accent/10 rounded-full" }, badge)))))),
+            React.createElement("span", { className: "font-bold text-lg text-secondary" },
+                user.score,
+                " pts")))))));
+};
+
+// --- components/Loader.tsx ---
+const Loader = () => {
+    return (React.createElement("div", { className: "flex justify-center items-center py-16", "aria-label": "Loading content" },
+        React.createElement("div", { className: "animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-primary" })));
+};
+
+// --- components/Map.tsx ---
+const MapComponent = ({ tips, activeTipId, onMarkerClick }) => {
+    const mapRef = useRef(null);
+    const mapInstance = useRef(null);
+    const tipMarkersRef = useRef({});
+    const startMarkerRef = useRef(null);
+    const endMarkerRef = useRef(null);
+    const routingControlRef = useRef(null);
+    const debounceTimer = useRef(null);
+    const [startPoint, setStartPoint] = useState(null);
+    const [endPoint, setEndPoint] = useState(null);
+    const [startQuery, setStartQuery] = useState('');
+    const [endQuery, setEndQuery] = useState('');
+    const [startSuggestions, setStartSuggestions] = useState([]);
+    const [endSuggestions, setEndSuggestions] = useState([]);
+    const [routeInfo, setRouteInfo] = useState(null);
+    // Initialize map
+    useEffect(() => {
+        if (!mapRef.current || typeof L === 'undefined' || mapInstance.current) {
+            return;
+        }
+        mapInstance.current = L.map(mapRef.current, { center: { lat: 28.6139, lng: 77.2090 }, zoom: 11 });
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(mapInstance.current);
+        return () => {
+            if (mapInstance.current) {
+                mapInstance.current.remove();
+                mapInstance.current = null;
+            }
+        };
+    }, []);
+    // Update tip markers
+    useEffect(() => {
+        if (!mapInstance.current)
+            return;
+        const currentMarkers = tipMarkersRef.current;
+        const tipsWithCoords = tips.filter(tip => tip.coordinates);
+        const tipIds = new Set(tipsWithCoords.map(tip => tip.id));
+        Object.keys(currentMarkers).forEach(tipIdStr => {
+            const tipId = parseInt(tipIdStr, 10);
+            if (!tipIds.has(tipId)) {
+                currentMarkers[tipId].remove();
+                delete currentMarkers[tipId];
+            }
+        });
+        tipsWithCoords.forEach(tip => {
+            if (!tip.coordinates)
+                return;
+            const isActive = tip.id === activeTipId;
+            const iconHtml = `<div class="marker-icon-container ${isActive ? 'active' : ''}"><div class="marker-icon-emoji">${getTransportIcon(tip.transportMode)}</div></div>`;
+            const icon = L.divIcon({ html: iconHtml, className: 'custom-leaflet-div-icon', iconSize: [32, 32], iconAnchor: [16, 16], popupAnchor: [0, -16] });
+            if (currentMarkers[tip.id]) {
+                currentMarkers[tip.id].setIcon(icon);
+            }
+            else {
+                const marker = L.marker(tip.coordinates, { icon }).addTo(mapInstance.current);
+                const popupContent = `<div class="p-1"><div class="font-bold">${getTransportIcon(tip.transportMode)} ${tip.origin}</div><div class="text-sm text-text-secondary">To: ${tip.destination}</div><div class="text-sm mt-1">Cost: <span class="font-semibold text-secondary">${tip.estimatedCost}</span></div></div>`;
+                marker.bindPopup(popupContent);
+                marker.on('click', () => onMarkerClick(tip.id));
+                tipMarkersRef.current[tip.id] = marker;
+            }
+        });
+    }, [tips, activeTipId, onMarkerClick]);
+    const createMarker = (point, ref, label, color) => {
+        if (ref.current)
+            ref.current.remove();
+        if (point && mapInstance.current) {
+            const icon = L.divIcon({
+                html: `<div class="marker-icon-container" style="background-color: ${color};">${label}</div>`,
+                className: 'custom-leaflet-div-icon',
+                iconSize: [32, 32],
+                iconAnchor: [16, 32],
+            });
+            ref.current = L.marker(point.coords, { icon }).addTo(mapInstance.current).bindPopup(point.name);
+        }
+    };
+    useEffect(() => createMarker(startPoint, startMarkerRef, 'A', '#0d9488'), [startPoint]);
+    useEffect(() => createMarker(endPoint, endMarkerRef, 'B', '#f97316'), [endPoint]);
+    // Update route
+    useEffect(() => {
+        if (routingControlRef.current)
+            mapInstance.current.removeControl(routingControlRef.current);
+        if (startPoint && endPoint && mapInstance.current) {
+            const routingControl = L.Routing.control({
+                waypoints: [L.latLng(startPoint.coords.lat, startPoint.coords.lng), L.latLng(endPoint.coords.lat, endPoint.coords.lng)],
+                routeWhileDragging: false, addWaypoints: false, createMarker: () => null,
+                lineOptions: { styles: [{ color: '#f97316', opacity: 0.8, weight: 6 }] }
+            }).on('routesfound', (e) => {
+                const summary = e.routes[0].summary;
+                const distance = (summary.totalDistance / 1000).toFixed(2) + ' km';
+                const time = Math.round(summary.totalTime / 60) + ' minutes';
+                setRouteInfo({ distance, time });
+            }).addTo(mapInstance.current);
+            routingControlRef.current = routingControl;
+        }
+        else {
+            setRouteInfo(null);
+        }
+    }, [startPoint, endPoint]);
+    const fetchSuggestions = async (query, setSuggestions) => {
+        if (query.length < 3) {
+            setSuggestions([]);
+            return;
+        }
+        const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=in`);
+        const data = await response.json();
+        setSuggestions(data);
+    };
+    const handleQueryChange = (e, type) => {
+        const query = e.target.value;
+        if (type === 'start')
+            setStartQuery(query);
+        else
+            setEndQuery(query);
+        if (debounceTimer.current)
+            clearTimeout(debounceTimer.current);
+        debounceTimer.current = setTimeout(() => {
+            fetchSuggestions(query, type === 'start' ? setStartSuggestions : setEndSuggestions);
+        }, 300);
+    };
+    const handleSuggestionClick = (suggestion, type) => {
+        const point = { coords: { lat: parseFloat(suggestion.lat), lng: parseFloat(suggestion.lon) }, name: suggestion.display_name };
+        if (type === 'start') {
+            setStartPoint(point);
+            setStartQuery(suggestion.display_name);
+            setStartSuggestions([]);
+        }
+        else {
+            setEndPoint(point);
+            setEndQuery(suggestion.display_name);
+            setEndSuggestions([]);
+        }
+        mapInstance.current.flyTo(point.coords, 14);
+    };
+    const handleGeolocate = () => {
+        navigator.geolocation.getCurrentPosition((position) => {
+            const { latitude, longitude } = position.coords;
+            const point = { coords: { lat: latitude, lng: longitude }, name: "My Current Location" };
+            setStartPoint(point);
+            setStartQuery("My Current Location");
+            mapInstance.current.flyTo(point.coords, 15);
+        }, (error) => console.error(`Geolocation error: ${error.message}`));
+    };
+    const SuggestionList = ({ suggestions, onClick }) => (React.createElement("div", { className: "suggestions-container" }, suggestions.map((s, i) => (React.createElement("div", { key: i, className: "suggestion-item", onClick: () => onClick(s) }, s.display_name)))));
+    return (React.createElement("div", { className: "bg-surface rounded-xl shadow-lg p-6" },
+        React.createElement("h3", { className: "text-xl font-bold text-text-primary mb-4" }, "Plan a Route"),
+        React.createElement("div", { style: { height: '500px' }, className: "rounded-lg overflow-hidden relative", role: "application" },
+            React.createElement("div", { className: "directions-panel" },
+                React.createElement("div", { className: "directions-input-group" },
+                    React.createElement("input", { type: "text", value: startQuery, onChange: e => handleQueryChange(e, 'start'), placeholder: "From: address or location", className: "directions-input" }),
+                    React.createElement("button", { onClick: handleGeolocate, className: "geolocate-btn", "aria-label": "Use my location" },
+                        React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-5 w-5 text-primary", viewBox: "0 0 20 20", fill: "currentColor" },
+                            React.createElement("path", { fillRule: "evenodd", d: "M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z", clipRule: "evenodd" }))),
+                    startSuggestions.length > 0 && React.createElement(SuggestionList, { suggestions: startSuggestions, onClick: s => handleSuggestionClick(s, 'start') })),
+                React.createElement("div", { className: "directions-input-group" },
+                    React.createElement("input", { type: "text", value: endQuery, onChange: e => handleQueryChange(e, 'end'), placeholder: "To: address or location", className: "directions-input" }),
+                    endSuggestions.length > 0 && React.createElement(SuggestionList, { suggestions: endSuggestions, onClick: s => handleSuggestionClick(s, 'end') })),
+                routeInfo && (React.createElement("div", { className: "route-summary" },
+                    React.createElement("p", null,
+                        React.createElement("strong", null, "Distance:"),
+                        " ",
+                        routeInfo.distance),
+                    React.createElement("p", null,
+                        React.createElement("strong", null, "Time:"),
+                        " ",
+                        routeInfo.time)))),
+            React.createElement("div", { ref: mapRef, className: "h-full w-full bg-gray-200" }))));
+};
+
+// --- components/TipForm.tsx ---
+const TipForm = ({ onClose, onSubmit, currentUser }) => {
+    const [origin, setOrigin] = useState('');
+    const [destination, setDestination] = useState('');
+    const [transportMode, setTransportMode] = useState(TransportMode.Taxi);
+    const [estimatedCost, setEstimatedCost] = useState('');
+    const [estimatedTime, setEstimatedTime] = useState('');
+    const [advice, setAdvice] = useState('');
+    const handleSubmit = (e) => {
+        e.preventDefault();
+        if (!currentUser)
+            return; // Guard against submission without user
+        onSubmit({
+            origin,
+            destination,
+            transportMode,
+            estimatedCost,
+            estimatedTime,
+            advice,
+        });
+        onClose();
+    };
+    return (React.createElement("div", { className: "fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4", role: "dialog", "aria-modal": "true", "aria-labelledby": "form-title" },
+        React.createElement("div", { className: "bg-surface rounded-xl shadow-2xl p-6 md:p-8 w-full max-w-lg max-h-full overflow-y-auto" },
+            React.createElement("div", { className: "flex justify-between items-center mb-6" },
+                React.createElement("h2", { id: "form-title", className: "text-2xl font-bold text-primary" }, "Share a New Tip"),
+                React.createElement("button", { onClick: onClose, className: "text-gray-400 hover:text-gray-600", "aria-label": "Close form" },
+                    React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-6 w-6", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor" },
+                        React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M6 18L18 6M6 6l12 12" })))),
+            !currentUser && (React.createElement("div", { className: "bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-4 rounded-md", role: "alert" },
+                React.createElement("p", { className: "font-bold" }, "Authentication Required"),
+                React.createElement("p", null, "Please log in to share your travel tip."))),
+            React.createElement("form", { onSubmit: handleSubmit, className: "space-y-4" },
+                React.createElement("div", null,
+                    React.createElement("label", { htmlFor: "origin", className: "block text-sm font-medium text-text-secondary mb-1" }, "Origin"),
+                    React.createElement("input", { type: "text", id: "origin", value: origin, onChange: e => setOrigin(e.target.value), required: true, className: "w-full p-2 border border-gray-300 rounded-md focus:ring-primary focus:border-primary" })),
+                React.createElement("div", null,
+                    React.createElement("label", { htmlFor: "destination", className: "block text-sm font-medium text-text-secondary mb-1" }, "Destination"),
+                    React.createElement("input", { type: "text", id: "destination", value: destination, onChange: e => setDestination(e.target.value), required: true, className: "w-full p-2 border border-gray-300 rounded-md focus:ring-primary focus:border-primary" })),
+                React.createElement("div", null,
+                    React.createElement("label", { htmlFor: "transportMode", className: "block text-sm font-medium text-text-secondary mb-1" }, "Mode of Transport"),
+                    React.createElement("select", { id: "transportMode", value: transportMode, onChange: e => setTransportMode(e.target.value), required: true, className: "w-full p-2 border border-gray-300 rounded-md focus:ring-primary focus:border-primary" }, Object.values(TransportMode).map(mode => (React.createElement("option", { key: mode, value: mode }, mode))))),
+                React.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-4" },
+                    React.createElement("div", null,
+                        React.createElement("label", { htmlFor: "estimatedCost", className: "block text-sm font-medium text-text-secondary mb-1" }, "Estimated Cost"),
+                        React.createElement("input", { type: "text", id: "estimatedCost", value: estimatedCost, onChange: e => setEstimatedCost(e.target.value), placeholder: "e.g., \u20B9100-150", required: true, className: "w-full p-2 border border-gray-300 rounded-md focus:ring-primary focus:border-primary" })),
+                    React.createElement("div", null,
+                        React.createElement("label", { htmlFor: "estimatedTime", className: "block text-sm font-medium text-text-secondary mb-1" }, "Estimated Time"),
+                        React.createElement("input", { type: "text", id: "estimatedTime", value: estimatedTime, onChange: e => setEstimatedTime(e.target.value), placeholder: "e.g., 20 mins", required: true, className: "w-full p-2 border border-gray-300 rounded-md focus:ring-primary focus:border-primary" }))),
+                React.createElement("div", null,
+                    React.createElement("label", { htmlFor: "advice", className: "block text-sm font-medium text-text-secondary mb-1" }, "Advice / Tip"),
+                    React.createElement("textarea", { id: "advice", value: advice, onChange: e => setAdvice(e.target.value), required: true, rows: 4, className: "w-full p-2 border border-gray-300 rounded-md focus:ring-primary focus:border-primary", placeholder: "Share your wisdom..." })),
+                React.createElement("div", { className: "flex justify-end pt-4" },
+                    React.createElement("button", { type: "button", onClick: onClose, className: "mr-3 px-4 py-2 bg-gray-200 text-text-secondary rounded-md hover:bg-gray-300" }, "Cancel"),
+                    React.createElement("button", { type: "submit", disabled: !currentUser, className: "px-6 py-2 bg-primary text-white font-semibold rounded-md hover:bg-orange-600 disabled:bg-gray-400 disabled:cursor-not-allowed" }, "Submit Tip"))))));
+};
+
+// --- components/ChatButton.tsx ---
+const ChatButton = ({ onClick }) => {
+    return (React.createElement("button", { onClick: onClick, className: "fixed bottom-6 right-6 bg-primary text-white rounded-full p-4 shadow-lg hover:bg-blue-700 transition-transform transform hover:scale-110 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary z-20", "aria-label": "Open live chat" },
+        React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-8 w-8", viewBox: "0 0 20 20", fill: "currentColor" },
+            React.createElement("path", { fillRule: "evenodd", d: "M18 10c0 3.866-3.582 7-8 7a8.839 8.839 0 01-4.082-.973l-1.12.373a1 1 0 01-1.13-1.13l.374-1.12A8.839 8.839 0 012 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM4.717 14.155A6.974 6.974 0 004 10.5c0-2.21.99-4.2 2.585-5.5H7.5a1 1 0 010 2H5.195a4.978 4.978 0 00-1.47 2.5H4.5a1 1 0 010 2h-.775a4.98 4.98 0 001.037 2.086l.955-.318zM12.5 7h-5a1 1 0 110-2h5a1 1 0 110 2zm0 4h-5a1 1 0 110-2h5a1 1 0 110 2z", clipRule: "evenodd" }))));
+};
+
+// --- components/ChatWindow.tsx ---
+const renderContent = (content) => {
+    const sanitized = content
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    const formatted = sanitized
+        .replace(/\n/g, '<br />')
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline">$1</a>');
+    return { __html: formatted };
+};
+const ChatWindow = ({ isOpen, onClose, tips }) => {
+    const [messages, setMessages] = useState([]);
+    const [userInput, setUserInput] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const messagesEndRef = useRef(null);
+    useEffect(() => {
+        if (isOpen && messages.length === 0) {
+            setMessages([{
+                    role: 'model',
+                    content: 'Hello! I am FareGuide, your AI travel assistant. Ask me about the tips on your screen or any other travel questions you have!'
+                }]);
+        }
+    }, [isOpen, messages.length]);
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    };
+    useEffect(scrollToBottom, [messages]);
+    const handleSendMessage = async (e) => {
+        e.preventDefault();
+        const trimmedInput = userInput.trim();
+        if (!trimmedInput)
+            return;
+        const userMessage = { role: 'user', content: trimmedInput };
+        setMessages(prev => [...prev, userMessage, { role: 'model', content: '' }]);
+        setUserInput('');
+        setIsLoading(true);
+        try {
+            const stream = postChatMessageStream(trimmedInput, tips);
+            for await (const chunk of stream) {
+                setMessages(prev => {
+                    const newMessages = [...prev];
+                    newMessages[newMessages.length - 1].content += chunk;
+                    return newMessages;
+                });
+            }
+        }
+        catch (error) {
+            console.error("Chat error:", error);
+            setMessages(prev => {
+                const newMessages = [...prev];
+                newMessages[newMessages.length - 1].content = 'Sorry, I\'m having trouble connecting. Please try again later.';
+                return newMessages;
+            });
+        }
+        finally {
+            setIsLoading(false);
+        }
+    };
+    if (!isOpen)
+        return null;
+    return (React.createElement("div", { className: "fixed bottom-24 right-6 w-11/12 max-w-md h-3/4 max-h-[600px] bg-surface rounded-xl shadow-2xl flex flex-col z-20 transition-transform transform origin-bottom-right", role: "dialog", "aria-modal": "true" },
+        React.createElement("div", { className: "flex justify-between items-center p-4 bg-primary text-white rounded-t-xl" },
+            React.createElement("h3", { className: "font-bold text-lg" }, "Chat with FareGuide"),
+            React.createElement("button", { onClick: onClose, className: "hover:bg-orange-600 rounded-full p-1", "aria-label": "Close chat" },
+                React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-6 w-6", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor" },
+                    React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M6 18L18 6M6 6l12 12" })))),
+        React.createElement("div", { className: "flex-1 p-4 overflow-y-auto bg-background" },
+            messages.map((msg, index) => (React.createElement("div", { key: index, className: `flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} mb-3` },
+                React.createElement("div", { className: `max-w-xs lg:max-w-md px-4 py-2 rounded-2xl ${msg.role === 'user' ? 'bg-primary text-white' : 'bg-gray-200 text-text-primary'}` },
+                    React.createElement("div", { className: "text-sm", dangerouslySetInnerHTML: renderContent(msg.content) }))))),
+            isLoading && messages[messages.length - 1]?.content === '' && (React.createElement("div", { className: "flex justify-start mb-3" },
+                React.createElement("div", { className: "max-w-xs lg:max-w-md px-4 py-2 rounded-2xl bg-gray-200 text-text-primary" },
+                    React.createElement("div", { className: "flex items-center space-x-1" },
+                        React.createElement("span", { className: "h-2 w-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]" }),
+                        React.createElement("span", { className: "h-2 w-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]" }),
+                        React.createElement("span", { className: "h-2 w-2 bg-gray-400 rounded-full animate-bounce" }))))),
+            React.createElement("div", { ref: messagesEndRef })),
+        React.createElement("div", { className: "p-4 border-t border-gray-200 bg-surface rounded-b-xl" },
+            React.createElement("form", { onSubmit: handleSendMessage, className: "flex items-center space-x-2" },
+                React.createElement("input", { type: "text", value: userInput, onChange: (e) => setUserInput(e.target.value), placeholder: "Ask for advice...", "aria-label": "Your message", className: "w-full p-2 border border-gray-300 rounded-full focus:ring-primary focus:border-primary", disabled: isLoading }),
+                React.createElement("button", { type: "submit", disabled: isLoading, className: "bg-primary text-white rounded-full p-3 hover:bg-orange-600 disabled:bg-gray-400 transition" },
+                    React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-5 w-5", viewBox: "0 0 20 20", fill: "currentColor" },
+                        React.createElement("path", { d: "M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" })))))));
+};
+
+
+// ===== From App.tsx (now the main app logic) =====
+const Hero = () => {
+    return (React.createElement("div", { className: "relative bg-gradient-to-b from-orange-100 to-background overflow-hidden text-center pt-16 pb-20 px-4" },
+        React.createElement("div", { className: "absolute top-0 left-0 w-full h-full z-0" },
+            React.createElement("div", { className: "absolute top-1/4 -left-1/4 w-72 h-72 md:w-96 md:h-96 bg-white rounded-full opacity-30 filter blur-xl animate-cloud-move" }),
+            React.createElement("div", { className: "absolute top-1/3 -right-1/4 w-72 h-72 md:w-96 md:h-96 bg-white rounded-full opacity-20 filter blur-2xl animate-cloud-move-delay" }),
+            React.createElement("div", { className: "absolute top-1/4 right-full text-3xl md:text-4xl animate-vehicle-move opacity-70" }, "\uD83D\uDEFA"),
+            React.createElement("div", { className: "absolute top-1/3 right-full text-xl md:text-2xl animate-vehicle-move-delay opacity-60" }, "\uD83D\uDE86")),
+        React.createElement("div", { className: "relative z-10" },
+            React.createElement("h1", { className: "text-4xl md:text-5xl font-extrabold text-primary mb-2" }, "Namaste! Your Guide to Navigating India"),
+            React.createElement("p", { className: "text-lg text-text-secondary max-w-3xl mx-auto" }, "Fair fares and local secrets, from Delhi to Mumbai. Travel with confidence using our community-powered app."))));
+};
+const App = () => {
+    const [tips, setTips] = useState([]);
+    const [users, setUsers] = useState([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [searchTerm, setSearchTerm] = useState('');
+    const [isFormOpen, setIsFormOpen] = useState(false);
+    const [currentUser, setCurrentUser] = useState(null);
+    const [isGsiScriptLoaded, setIsGsiScriptLoaded] = useState(false);
+    const [isChatOpen, setIsChatOpen] = useState(false);
+    const [activeTipId, setActiveTipId] = useState(null);
+    const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+    const tipRefs = useRef([]);
+    const GOOGLE_CLIENT_ID = '699469816762-u4ujis22t2p1ojqag8gvi8s0c5utmfpr.apps.googleusercontent.com';
+    useEffect(() => {
+        const storedUser = localStorage.getItem('fairfare-user');
+        const storedToken = localStorage.getItem('session-token');
+        if (storedUser && storedToken) {
+            setCurrentUser(JSON.parse(storedUser));
+        }
+        else {
+            localStorage.removeItem('fairfare-user');
+            localStorage.removeItem('session-token');
+        }
+        const loadTips = async () => {
+            try {
+                const fetchedTips = await getTips();
+                setTips(fetchedTips);
+                tipRefs.current = fetchedTips.map(() => createRef());
+                const userMap = new Map();
+                fetchedTips.forEach(tip => {
+                    const existingUser = userMap.get(tip.user.username);
+                    if (existingUser) {
+                        existingUser.score += tip.user.score;
+                    }
+                    else {
+                        userMap.set(tip.user.username, { ...tip.user });
+                    }
+                });
+                const sortedUsers = Array.from(userMap.values()).sort((a, b) => b.score - a.score);
+                setUsers(sortedUsers);
+            }
+            catch (err) {
+                setError('Failed to fetch travel tips from the server. Please try again later.');
+                console.error(err);
+            }
+            finally {
+                setIsLoading(false);
+            }
+        };
+        loadTips();
+    }, []);
+    useEffect(() => {
+        const channel = new BroadcastChannel('fairfare_tips');
+        const handleNewTip = (event) => {
+            const receivedTip = event.data;
+            setTips(prevTips => {
+                if (prevTips.some(tip => tip.id === receivedTip.id)) {
+                    return prevTips;
+                }
+                const newTips = [receivedTip, ...prevTips];
+                tipRefs.current = newTips.map(() => createRef());
+                return newTips;
+            });
+        };
+        channel.addEventListener('message', handleNewTip);
+        return () => {
+            channel.removeEventListener('message', handleNewTip);
+            channel.close();
+        };
+    }, []);
+    const handleLoginSuccess = async (response) => {
+        try {
+            const { user, token } = await loginWithGoogle(response.credential);
+            setCurrentUser(user);
+            localStorage.setItem('fairfare-user', JSON.stringify(user));
+            localStorage.setItem('session-token', token);
+        }
+        catch (error) {
+            console.error("Authentication with backend failed:", error);
+            setError("Login failed. Please try again.");
+        }
+    };
+    useEffect(() => {
+        if (!GOOGLE_CLIENT_ID) {
+            console.warn("Google Client ID not found. Login will be disabled.");
+            return;
+        }
+        const checkGsi = () => {
+            if (window.google && window.google.accounts) {
+                try {
+                    window.google.accounts.id.initialize({
+                        client_id: GOOGLE_CLIENT_ID,
+                        callback: handleLoginSuccess,
+                    });
+                    setIsGsiScriptLoaded(true);
+                }
+                catch (error) {
+                    console.error("Error initializing Google Sign-In:", error);
+                }
+            }
+            else {
+                setTimeout(checkGsi, 100);
+            }
+        };
+        checkGsi();
+    }, [GOOGLE_CLIENT_ID]);
+    useEffect(() => {
+        if (isGsiScriptLoaded && !currentUser) {
+            const signInDiv = document.getElementById('signInDivSidebar');
+            if (signInDiv) {
+                signInDiv.innerHTML = '';
+                try {
+                    window.google.accounts.id.renderButton(signInDiv, { theme: 'outline', size: 'large', type: 'standard' });
+                }
+                catch (error) {
+                    console.error("Error rendering Google Sign-In button:", error);
+                }
+            }
+        }
+    }, [currentUser, isGsiScriptLoaded, isSidebarOpen]);
+    const handleLogout = () => {
+        if (window.google) {
+            window.google.accounts.id.disableAutoSelect();
+        }
+        setCurrentUser(null);
+        localStorage.removeItem('fairfare-user');
+        localStorage.removeItem('session-token');
+    };
+    const handleAddTipClick = () => {
+        setIsSidebarOpen(false);
+        setIsFormOpen(true);
+    };
+    const filteredTips = useMemo(() => {
+        if (!searchTerm)
+            return tips;
+        return tips.filter(tip => tip.origin.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            tip.destination.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            tip.advice.toLowerCase().includes(searchTerm.toLowerCase()));
+    }, [searchTerm, tips]);
+    const handleAddTip = async (newTipData) => {
+        try {
+            const createdTip = await addTip(newTipData);
+            setTips(prevTips => {
+                const newTips = [createdTip, ...prevTips];
+                tipRefs.current = newTips.map(() => createRef());
+                return newTips;
+            });
+        }
+        catch (error) {
+            console.error("Failed to add tip via backend:", error);
+            setError("Sorry, we couldn't save your tip. Please try again.");
+        }
+    };
+    const handleRatingChange = async (tipId, change) => {
+        let originalTips = tips;
+        let tipAuthorUsername = null;
+        const updatedTips = tips.map(tip => {
+            if (tip.id === tipId) {
+                tipAuthorUsername = tip.user.username;
+                return { ...tip, rating: tip.rating + change };
+            }
+            return tip;
+        });
+        setTips(updatedTips);
+        try {
+            await updateRating(tipId, change);
+            if (tipAuthorUsername) {
+                const scoreChange = change > 0 ? 5 : -2;
+                const updatedUsers = users.map(user => {
+                    if (user.username === tipAuthorUsername) {
+                        return { ...user, score: user.score + scoreChange };
+                    }
+                    return user;
+                }).sort((a, b) => b.score - a.score);
+                setUsers(updatedUsers);
+            }
+        }
+        catch (error) {
+            console.error("Failed to update rating:", error);
+            setTips(originalTips);
+            setError("Couldn't save your rating. Please try again.");
+        }
+    };
+    const handleMarkerClick = (tipId) => {
+        setActiveTipId(tipId);
+        const tipIndex = tips.findIndex(tip => tip.id === tipId);
+        if (tipIndex !== -1 && tipRefs.current[tipIndex]) {
+            tipRefs.current[tipIndex].current?.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center',
+            });
+        }
+    };
+    return (React.createElement("div", { className: "min-h-screen bg-background text-text-primary font-sans relative overflow-x-hidden" },
+        React.createElement(Sidebar, { isOpen: isSidebarOpen, onClose: () => setIsSidebarOpen(false), onAddTipClick: handleAddTipClick, currentUser: currentUser, onLogout: handleLogout }),
+        isSidebarOpen && (React.createElement("div", { className: "fixed inset-0 bg-black bg-opacity-50 z-20", onClick: () => setIsSidebarOpen(false), "aria-hidden": "true" })),
+        React.createElement("div", { className: `transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-64' : 'translate-x-0'}` },
+            React.createElement(Header, { onToggleSidebar: () => setIsSidebarOpen(prev => !prev), isSidebarOpen: isSidebarOpen }),
+            React.createElement(Hero, null),
+            React.createElement("main", { className: "container mx-auto p-4 md:p-6 lg:p-8" },
+                React.createElement(SearchBar, { onSearch: setSearchTerm }),
+                isLoading && React.createElement(Loader, null),
+                error && React.createElement("div", { className: "text-center text-red-500 bg-red-100 p-4 rounded-lg" }, error),
+                !isLoading && !error && (React.createElement("div", { className: "grid grid-cols-1 lg:grid-cols-3 gap-8 mt-8" },
+                    React.createElement("div", { className: "lg:col-span-2 space-y-6" },
+                        React.createElement("h2", { className: "text-2xl font-bold text-text-primary border-b-2 border-primary pb-2" }, "Community Tips"),
+                        filteredTips.length > 0 ? (filteredTips.map((tip, index) => (React.createElement(TipCard, { key: tip.id, tip: tip, onRatingChange: handleRatingChange, onHover: setActiveTipId, isActive: tip.id === activeTipId, ref: tipRefs.current[index] })))) : (React.createElement("div", { className: "text-center py-12 bg-surface rounded-lg shadow-md" },
+                            React.createElement("p", { className: "text-text-secondary" }, "No tips found for your search. Be the first to add one!")))),
+                    React.createElement("aside", { className: "space-y-8" },
+                        React.createElement(Leaderboard, { users: users }),
+                        React.createElement(MapComponent, { tips: tips, activeTipId: activeTipId, onMarkerClick: handleMarkerClick })))))),
+        isFormOpen && (React.createElement(TipForm, { onClose: () => setIsFormOpen(false), onSubmit: handleAddTip, currentUser: currentUser })),
+        React.createElement(ChatButton, { onClick: () => setIsChatOpen(true) }),
+        React.createElement(ChatWindow, { isOpen: isChatOpen, onClose: () => setIsChatOpen(false), tips: filteredTips })));
+};
+
+// ===== From index.tsx (entry point) =====
+const rootElement = document.getElementById('root');
+if (!rootElement) {
+    throw new Error("Could not find root element to mount to");
+}
+const root = ReactDOM.createRoot(rootElement);
+root.render(React.createElement(React.StrictMode, null, React.createElement(App, null)));
+
+    </script>
   </body>
 </html>
