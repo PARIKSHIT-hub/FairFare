@@ -96,6 +96,19 @@
     .marker-icon-emoji {
         font-size: 16px;
     }
+    .checkpoint-marker-icon {
+        background-color: #f97316;
+        border: 2px solid white;
+        border-radius: 50%;
+        width: 28px;
+        height: 28px;
+        color: white;
+        font-size: 14px;
+        font-weight: bold;
+        text-align: center;
+        line-height: 24px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
     /* Leaflet popup customization to match app theme */
     .leaflet-popup-content-wrapper {
         border-radius: 8px !important;
@@ -146,8 +159,10 @@
       padding: 10px;
       border-radius: 8px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-      width: 300px;
+      width: 320px;
       font-family: sans-serif;
+      max-height: calc(100% - 20px);
+      overflow-y: auto;
     }
     .directions-input-group {
       position: relative;
@@ -203,6 +218,15 @@
         font-size: 14px;
         color: #1F2937;
     }
+    .rideshare-disclaimer {
+        font-size: 11px;
+        color: #6B7280;
+        text-align: center;
+        padding: 8px;
+        background-color: #F3F4F6;
+        border-radius: 4px;
+        margin-top: 8px;
+    }
    </style>
   <script type="importmap">
 {
@@ -235,6 +259,9 @@ var TransportMode;
     TransportMode["AutoRickshaw"] = "AutoRickshaw";
     TransportMode["Train"] = "Train";
     TransportMode["Ferry"] = "Ferry";
+    TransportMode["Uber"] = "Uber";
+    TransportMode["Ola"] = "Ola";
+    TransportMode["Rapido"] = "Rapido";
 })(TransportMode || (TransportMode = {}));
 
 // ===== From services/geminiService.ts =====
@@ -274,11 +301,137 @@ const getCoordinatesForAddress = async (address) => {
         return null;
     }
 };
-async function* getAiChatResponseStream(message, contextTips) {
+const getRideShareEstimates = async (origin, destination, distance, time) => {
+    try {
+        const prompt = `
+      You are a real-time fare calculator for India. Provide realistic ride-sharing fare estimates for a trip from "${origin}" to "${destination}".
+      - Driving distance: ${distance}
+      - Estimated travel time: ${time}
+      - Current time of day: ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
+      
+      Based on this data, provide estimates for major services like Uber, Ola, and Rapido. 
+      Your estimates MUST account for typical factors like:
+      1.  Time of day (e.g., peak rush hour, night charges).
+      2.  Standard traffic conditions for a major Indian city.
+      3.  Potential for typical (non-event-based) surge pricing.
+      
+      For each estimate, provide a brief 'reasoning' for your calculated fare range.
+      Return the data in JSON format.
+    `;
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        estimates: {
+                            type: Type.ARRAY,
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    serviceName: { type: Type.STRING, description: "e.g., UberGo, Ola Micro, Rapido Bike" },
+                                    brand: { type: Type.STRING, description: "e.g., Uber, Ola, or Rapido" },
+                                    fareRange: { type: Type.STRING, description: "e.g., ₹150 - ₹180" },
+                                    description: { type: Type.STRING, description: "Brief description of the service" },
+                                    reasoning: { type: Type.STRING, description: "Reasoning for the fare estimate, e.g., 'Includes peak hour surge'." },
+                                },
+                                required: ["serviceName", "brand", "fareRange", "description", "reasoning"],
+                            },
+                        },
+                    },
+                },
+            },
+        });
+        const jsonString = response.text.trim();
+        const result = JSON.parse(jsonString);
+        if (result && Array.isArray(result.estimates)) {
+            return result.estimates;
+        }
+        console.warn("Failed to parse ride-share estimates from Gemini response:", jsonString);
+        return null;
+    }
+    catch (error) {
+        console.error("Error fetching ride-share estimates from Gemini API:", error);
+        throw new Error("Could not fetch ride-share estimates.");
+    }
+};
+const analyzeAndEnhanceTip = async (origin, destination, advice) => {
+    const prompt = `
+    You are a helpful travel assistant for India. Your task is to process a user-submitted travel tip and enhance it into a trusted, step-by-step guide.
+
+    User's Input:
+    - Origin: "${origin}"
+    - Destination: "${destination}"
+    - Raw Advice: "${advice}"
+
+    Your instructions are:
+    1.  **Correct and Enhance Advice:** Read the "Raw Advice" and rewrite it to be grammatically correct, clear, and encouraging. Maintain the original meaning and key details.
+    2.  **Generate Checkpoints:** Based on the origin, destination, and advice, create a step-by-step journey plan. This plan must consist of logical checkpoints a traveler would follow.
+    3.  **Find Coordinates:** For each checkpoint, find its precise geographic coordinates (latitude and longitude). The first checkpoint MUST be at the origin and the last MUST be at the destination.
+    4.  **Provide Instructions:** For each checkpoint, write clear, actionable instructions for a traveler. For example: "Exit the station from Platform 1 and look for the blue 'Prepaid Taxi' sign."
+
+    Return a single JSON object. Do not add any text before or after the JSON.
+  `;
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        enhancedAdvice: {
+                            type: Type.STRING,
+                            description: "The grammatically corrected and improved version of the user's advice.",
+                        },
+                        checkpoints: {
+                            type: Type.ARRAY,
+                            description: "An array of step-by-step checkpoints for the journey.",
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    title: {
+                                        type: Type.STRING,
+                                        description: "A short, descriptive title for the checkpoint (e.g., 'Howrah Station, Platform 9').",
+                                    },
+                                    instructions: {
+                                        type: Type.STRING,
+                                        description: "Detailed instructions for what to do at this checkpoint.",
+                                    },
+                                    coordinates: {
+                                        type: Type.OBJECT,
+                                        properties: {
+                                            lat: { type: Type.NUMBER },
+                                            lng: { type: Type.NUMBER },
+                                        },
+                                        required: ["lat", "lng"],
+                                    },
+                                },
+                                required: ["title", "instructions", "coordinates"],
+                            },
+                        },
+                    },
+                    required: ["enhancedAdvice", "checkpoints"],
+                },
+            },
+        });
+        const jsonString = response.text.trim();
+        return JSON.parse(jsonString);
+    }
+    catch (error) {
+        console.error("Error analyzing tip with Gemini API:", error);
+        throw new Error("The AI failed to analyze the tip. Please check the locations or try again.");
+    }
+};
+async function* getAiChatResponseStream(message, contextTips, userLocation) {
     const systemInstruction = `You are FareGuide, an expert AI travel assistant for India. 
     Your goal is to provide helpful, safe, and budget-conscious travel advice.
     - Be friendly, clear, and encouraging.
     - Use the provided "Community Tips" as your primary source of information when relevant. Reference them directly if a user's question is about a specific trip shown.
+    - Be aware of the user's current location if provided, and use it to give more relevant, contextual advice. For example, suggesting nearby places or transport options.
     - If the user asks a general question, use your own knowledge but keep the advice grounded and practical for a traveler in India.
     - Do not make up fares or routes; if you don't know, say so.
     - Format responses with simple markdown (bolding with **text**).`;
@@ -294,7 +447,14 @@ ${contextTips.map(tip => `
 `).join('\n')}
 ---
 ` : "There are no specific tips on the screen right now.";
-    const contents = `${tipsContext}\n\n**User's Question:** ${message}`;
+    const locationContext = userLocation ? `
+---
+**User's Current Location:**
+Latitude: ${userLocation.lat}, Longitude: ${userLocation.lng}.
+Use this to provide localized suggestions if relevant to the user's query.
+---
+` : "";
+    const contents = `${tipsContext}${locationContext}\n\n**User's Question:** ${message}`;
     try {
         const response = await ai.models.generateContentStream({
             model: "gemini-2.5-flash",
@@ -314,85 +474,264 @@ ${contextTips.map(tip => `
 }
 
 // ===== From services/apiService.ts =====
-// This app uses a public JSON blob service as a simulated, persistent backend.
-// WARNING: This is for demonstration purposes only and is not secure.
-// In a production environment, use a secure, authenticated backend service.
-const BACKEND_URL = 'https://jsonblob.com/api/jsonBlob/1269411986423939072';
-
-const getBackendData = async () => {
-    const response = await fetch(BACKEND_URL);
-    if (!response.ok) {
-        throw new Error('Failed to fetch data from the backend.');
-    }
-    return await response.json();
-};
-
-const updateBackendData = async (data) => {
-    const response = await fetch(BACKEND_URL, {
-        method: 'PUT',
-        headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
+// This service simulates a backend API. In a real-world application, the localStorage
+// logic would be replaced with `fetch` calls to a server.
+// For demonstration, it uses localStorage for data persistence.
+const seedData = {
+    users: [
+        {
+            id: 1,
+            name: 'Priya Patel',
+            email: 'priya@example.com',
+            password: 'password123',
+            picture: 'https://i.pravatar.cc/150?u=priya'
         },
-        body: JSON.stringify(data),
-    });
-    if (!response.ok) {
-        throw new Error('Failed to update data on the backend.');
-    }
-    return await response.json();
+        {
+            id: 2,
+            name: 'Rohan Sharma',
+            email: 'rohan@example.com',
+            password: 'password123',
+            picture: 'https://i.pravatar.cc/150?u=rohan'
+        },
+        {
+            id: 3,
+            name: 'Aisha Khan',
+            email: 'aisha@example.com',
+            password: 'password123',
+            picture: 'https://i.pravatar.cc/150?u=aisha'
+        }
+    ],
+    tips: [
+        {
+            id: 1625078700000,
+            origin: "Kempegowda Int'l Airport, Bengaluru",
+            destination: "Koramangala, Bengaluru",
+            transportMode: TransportMode.Uber,
+            estimatedCost: "₹700-850",
+            estimatedTime: "1 hr 15 mins",
+            advice: "Use the dedicated app-based taxi pickup zone. Follow the signs after arrivals. Ola is also a good option here, compare prices for the best deal.",
+            rating: 22,
+            user: { username: "Priya Patel", score: 145, badges: ["Top Contributor", "Delhi Expert", "Frequent Flyer"] },
+            coordinates: { lat: 13.1986, lng: 77.7066 }
+        },
+        {
+            id: 1625078400000,
+            origin: "Indira Gandhi Int'l Airport, Delhi",
+            destination: "Connaught Place, Delhi",
+            transportMode: TransportMode.Taxi,
+            estimatedCost: "₹400-500",
+            estimatedTime: "45 mins",
+            advice: "Always use the prepaid taxi booth just outside the arrivals hall to avoid getting scammed. Don't engage with drivers who approach you directly.",
+            rating: 25,
+            user: { username: "Priya Patel", score: 145, badges: ["Top Contributor", "Delhi Expert", "Frequent Flyer"] },
+            coordinates: { lat: 28.5562, lng: 77.1000 }
+        },
+        {
+            id: 1625078500000,
+            origin: "CSMT Station, Mumbai",
+            destination: "Gateway of India",
+            transportMode: TransportMode.Bus,
+            estimatedCost: "₹10",
+            estimatedTime: "15 mins",
+            advice: "Take bus number 111 from the main road opposite the station. It's cheap, frequent, and drops you right at the destination. Avoid taxis here for short distances.",
+            rating: 18,
+            user: { username: "Rohan Sharma", score: 95, badges: ["Mumbai Local"] }
+        },
+        {
+            id: 1625078600000,
+            origin: "Howrah Station, Kolkata",
+            destination: "Park Street",
+            transportMode: TransportMode.Ferry,
+            estimatedCost: "₹10 (Ferry) + ₹30 (Auto)",
+            estimatedTime: "30 mins",
+            advice: "Take the ferry across the Hooghly river to Babughat. It's scenic and avoids traffic. From there, take an auto-rickshaw to Park Street.",
+            rating: 12,
+            user: { username: "Aisha Khan", score: 80, badges: ["Explorer"] },
+            checkpoints: [
+                { title: "Howrah Station", instructions: "Exit from the main gate of Howrah Station.", coordinates: { lat: 22.5845, lng: 88.3426 } },
+                { title: "Ferry Ghat", instructions: "Walk to the Howrah Ferry Ghat, located a short distance from the station.", coordinates: { lat: 22.5828, lng: 88.3448 } },
+                { title: "Babughat", instructions: "Take the ferry across the Hooghly river to Babughat.", coordinates: { lat: 22.5691, lng: 88.3525 } },
+                { title: "Auto Rickshaw Stand", instructions: "From Babughat, find the nearby auto-rickshaw stand.", coordinates: { lat: 22.5688, lng: 88.3530 } },
+                { title: "Park Street", instructions: "Take an auto-rickshaw to your destination on Park Street.", coordinates: { lat: 22.5536, lng: 88.3569 } }
+            ]
+        }
+    ]
 };
 
-const getAuthToken = () => {
-    return localStorage.getItem('session-token');
+const USERS_KEY = 'fairfare_users';
+const TIPS_KEY = 'fairfare_tips';
+
+let localUsers = [];
+let localTips = [];
+
+const _loadData = () => {
+    const storedUsers = localStorage.getItem(USERS_KEY);
+    const storedTips = localStorage.getItem(TIPS_KEY);
+
+    if (storedUsers && storedTips) {
+        localUsers = JSON.parse(storedUsers);
+        localTips = JSON.parse(storedTips);
+    } else {
+        localUsers = [...seedData.users];
+        localTips = [...seedData.tips];
+        _saveData();
+    }
 };
+
+const _saveData = () => {
+    try {
+        localStorage.setItem(USERS_KEY, JSON.stringify(localUsers));
+        localStorage.setItem(TIPS_KEY, JSON.stringify(localTips));
+    } catch (error) {
+        console.error("Failed to save data to localStorage:", error);
+    }
+};
+
+_loadData();
+
+const simulateDelay = (ms = 100) => new Promise(res => setTimeout(res, ms));
+const getAuthToken = () => localStorage.getItem('session-token');
 
 const getTips = async () => {
-    console.log("Fetching tips from cloud backend...");
-    const data = await getBackendData();
-    // Return tips in reverse chronological order (newest first)
-    return data.tips.sort((a, b) => b.id - a.id);
+    /*
+    // TODO: BACKEND INTEGRATION - Replace this simulation with a real API call.
+    // Example using fetch:
+    try {
+        const response = await fetch('/api/v1/tips');
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return await response.json();
+    } catch (error) {
+        console.error("API Error: Could not fetch tips.", error);
+        throw error; // Re-throw to be handled by the UI
+    }
+    */
+
+    // --- Start of LocalStorage Simulation (for demonstration) ---
+    await simulateDelay();
+    console.log("Fetching tips from localStorage-backed store...");
+    return [...localTips].sort((a, b) => b.id - a.id);
+    // --- End of LocalStorage Simulation ---
 };
 
 const addTip = async (tipData) => {
-    console.log("Submitting new tip to cloud backend:", tipData);
+    /*
+    // TODO: BACKEND INTEGRATION - Replace this simulation with a real API call.
+    // Example using fetch:
+    try {
+        const token = getAuthToken();
+        const response = await fetch('/api/v1/tips', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify(tipData)
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return await response.json();
+    } catch (error) {
+        console.error("API Error: Could not add tip.", error);
+        throw error;
+    }
+    */
+    
+    // --- Start of LocalStorage Simulation (for demonstration) ---
+    await simulateDelay();
+    console.log("Submitting new tip to localStorage-backed store:", tipData);
     const token = getAuthToken();
     if (!token) throw new Error("Authentication required to add a tip.");
     
     const loggedInUser = JSON.parse(localStorage.getItem('fairfare-user') || '{}');
-    const fetchedCoordinates = await getCoordinatesForAddress(tipData.origin);
+    
+    let tipCoordinates = null;
+    if (tipData.checkpoints && tipData.checkpoints.length > 0) {
+        tipCoordinates = tipData.checkpoints[0].coordinates;
+    } else {
+        tipCoordinates = await getCoordinatesForAddress(tipData.origin);
+    }
     
     const newTip = {
         ...tipData,
         id: Date.now(),
         rating: 0,
         user: { username: loggedInUser.name || "Anonymous", score: 1, badges: ["New Contributor"] },
-        ...(fetchedCoordinates && { coordinates: fetchedCoordinates })
+        ...(tipCoordinates && { coordinates: tipCoordinates })
     };
     
-    const data = await getBackendData();
-    data.tips.push(newTip);
-    await updateBackendData(data);
+    localTips.unshift(newTip);
+    _saveData();
     
     return newTip;
+    // --- End of LocalStorage Simulation ---
 };
 
 const updateRating = async (tipId, change) => {
-    console.log(`Updating rating for tip ${tipId} by ${change} on cloud backend`);
-    const data = await getBackendData();
-    const tipIndex = data.tips.findIndex(tip => tip.id === tipId);
-    if (tipIndex !== -1) {
-        data.tips[tipIndex].rating += change;
-        await updateBackendData(data);
+    /*
+    // TODO: BACKEND INTEGRATION - Replace this simulation with a real API call.
+    // Example using fetch:
+    try {
+        const response = await fetch(`/api/v1/tips/${tipId}/rate`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ change }) // e.g., { change: 1 } or { change: -1 }
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return await response.json(); // Assuming backend returns updated tip or success message
+    } catch (error) {
+        console.error("API Error: Could not update rating.", error);
+        throw error;
     }
+    */
+    
+    // --- Start of LocalStorage Simulation (for demonstration) ---
+    await simulateDelay();
+    console.log(`Updating rating for tip ${tipId} by ${change} in localStorage-backed store`);
+    const tip = localTips.find(tip => tip.id === tipId);
+    if (tip) {
+        tip.rating += change;
+        _saveData();
+    }
+    // --- End of LocalStorage Simulation ---
 };
 
-async function* postChatMessageStream(message, contextTips) {
-    console.log("Streaming chat message from backend:", message);
-    yield* getAiChatResponseStream(message, contextTips);
+async function* postChatMessageStream(message, contextTips, userLocation) {
+    console.log("Streaming chat message from AI service:", message);
+    yield* getAiChatResponseStream(message, contextTips, userLocation);
 }
 
 const loginWithGoogle = async (credential) => {
-    console.log("Verifying Google credential and syncing with cloud backend...");
+    /*
+    // TODO: BACKEND INTEGRATION - Replace this simulation with a real API call.
+    // It is critical to verify the Google token on the backend, not the frontend.
+    // Example using fetch:
+    try {
+        const response = await fetch('/api/v1/auth/google', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: credential })
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const { user, token } = await response.json();
+        return { user, token };
+    } catch (error) {
+        console.error("API Error: Google login failed.", error);
+        throw error;
+    }
+    */
+    
+    // --- Start of LocalStorage Simulation (for demonstration) ---
+    await simulateDelay();
+    console.log("Verifying Google credential and syncing with localStorage-backed store...");
     const decoded = JSON.parse(atob(credential.split('.')[1]));
     const googleUser = {
         name: decoded.name,
@@ -400,39 +739,58 @@ const loginWithGoogle = async (credential) => {
         picture: decoded.picture
     };
     
-    const data = await getBackendData();
-    let existingUser = data.users.find(u => u.email === googleUser.email);
+    let existingUser = localUsers.find(u => u.email === googleUser.email);
     let finalUser;
 
     if (existingUser) {
         existingUser.name = googleUser.name;
-        existingUser.picture = googleUser.picture; // Update with latest info from Google
+        existingUser.picture = googleUser.picture;
         finalUser = existingUser;
-        console.log("Existing user logged in with Google:", finalUser.email);
     } else {
         const newUser = {
             id: Date.now(),
             name: googleUser.name,
             email: googleUser.email,
-            password: null, // No password for Google sign-ins
+            password: null,
             picture: googleUser.picture
         };
-        data.users.push(newUser);
+        localUsers.push(newUser);
         finalUser = newUser;
-        console.log("New user registered via Google:", finalUser.email);
     }
     
-    await updateBackendData(data);
-    
-    const token = "backend-issued-secure-session-token-google";
+    _saveData();
+    const token = "local-session-token-google";
     return { user: { name: finalUser.name, email: finalUser.email, picture: finalUser.picture }, token };
+    // --- End of LocalStorage Simulation ---
 };
 
 const registerUser = async (name, email, password) => {
-    console.log("Registering new user on cloud backend...");
-    const data = await getBackendData();
+    /*
+    // TODO: BACKEND INTEGRATION - Replace this simulation with a real API call.
+    // Example using fetch:
+    try {
+        const response = await fetch('/api/v1/auth/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, email, password })
+        });
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+        }
+        const { user, token } = await response.json();
+        return { user, token };
+    } catch (error) {
+        console.error("API Error: Registration failed.", error);
+        throw error;
+    }
+    */
+
+    // --- Start of LocalStorage Simulation (for demonstration) ---
+    await simulateDelay();
+    console.log("Registering new user in localStorage-backed store...");
     
-    if (data.users.find(u => u.email === email)) {
+    if (localUsers.find(u => u.email === email)) {
         throw new Error('An account with this email already exists.');
     }
     
@@ -444,25 +802,50 @@ const registerUser = async (name, email, password) => {
         picture: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random&color=fff`
     };
     
-    data.users.push(newUser);
-    await updateBackendData(data);
+    localUsers.push(newUser);
+    _saveData();
     
-    const token = "backend-issued-secure-session-token-placeholder-email";
+    const token = "local-session-token-email";
     return { user: { name: newUser.name, email: newUser.email, picture: newUser.picture }, token };
+    // --- End of LocalStorage Simulation ---
 };
 
 const loginWithEmail = async (email, password) => {
-    console.log("Logging in with email via cloud backend...");
-    const data = await getBackendData();
-    const user = data.users.find(u => u.email === email && u.password === password);
+    /*
+    // TODO: BACKEND INTEGRATION - Replace this simulation with a real API call.
+    // Example using fetch:
+    try {
+        const response = await fetch('/api/v1/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password })
+        });
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.message || 'Invalid email or password.');
+        }
+        const { user, token } = await response.json();
+        return { user, token };
+    } catch (error) {
+        console.error("API Error: Login failed.", error);
+        throw error;
+    }
+    */
+    
+    // --- Start of LocalStorage Simulation (for demonstration) ---
+    await simulateDelay();
+    console.log("Logging in with email via localStorage-backed store...");
+    const user = localUsers.find(u => u.email === email && u.password === password);
     
     if (!user) {
         throw new Error('Invalid email or password.');
     }
     
-    const token = "backend-issued-secure-session-token-placeholder-email";
+    const token = "local-session-token-email";
     return { user: { name: user.name, email: user.email, picture: user.picture }, token };
+    // --- End of LocalStorage Simulation ---
 };
+
 
 // ===== From React and components =====
 import React, { useState, useEffect, useMemo, useRef, createRef, forwardRef, useCallback } from 'react';
@@ -552,12 +935,17 @@ const getTransportIcon = (mode) => {
         case TransportMode.AutoRickshaw: return '🛺';
         case TransportMode.Train: return '🚆';
         case TransportMode.Ferry: return '⛴️';
+        case TransportMode.Uber: return '🚗';
+        case TransportMode.Ola: return '🚙';
+        case TransportMode.Rapido: return '🛵';
         default: return '📍';
     }
 };
-const TipCard = forwardRef(({ tip, onRatingChange, onHover, isActive }, ref) => {
+const TipCard = forwardRef(({ tip, onRatingChange, onSetActiveTip, isActive }, ref) => {
+    const [isPlanVisible, setIsPlanVisible] = useState(false);
+    const hasCheckpoints = tip.checkpoints && tip.checkpoints.length > 0;
     const cardClasses = `bg-surface rounded-xl shadow-lg overflow-hidden transition-all duration-300 transform hover:-translate-y-1 hover:shadow-2xl ${isActive ? 'ring-2 ring-primary ring-offset-2' : ''}`;
-    return (React.createElement("article", { className: cardClasses, onMouseEnter: () => onHover(tip.id), onMouseLeave: () => onHover(null), ref: ref, tabIndex: 0 },
+    return (React.createElement("article", { className: cardClasses, onMouseEnter: () => onSetActiveTip(tip), onMouseLeave: () => onSetActiveTip(null), ref: ref, tabIndex: 0 },
         React.createElement("div", { className: "p-6" },
             React.createElement("div", { className: "flex justify-between items-start" },
                 React.createElement("div", null,
@@ -585,6 +973,17 @@ const TipCard = forwardRef(({ tip, onRatingChange, onHover, isActive }, ref) => 
                     React.createElement("p", { className: "text-sm text-text-secondary" }, "Time"),
                     React.createElement("p", { className: "font-bold text-lg text-accent" }, tip.estimatedTime))),
             React.createElement("p", { className: "text-text-secondary mt-4 mb-4 bg-orange-50 p-4 rounded-md border-l-4 border-orange-300" }, tip.advice),
+            hasCheckpoints && (React.createElement("div", null,
+                React.createElement("button", { onClick: () => setIsPlanVisible(!isPlanVisible), className: "w-full text-left font-semibold text-secondary hover:text-teal-700 py-2 flex items-center justify-between" },
+                    React.createElement("span", null, isPlanVisible ? 'Hide Route Plan' : 'View Route Plan'),
+                    React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: `h-5 w-5 transform transition-transform ${isPlanVisible ? 'rotate-180' : ''}`, viewBox: "0 0 20 20", fill: "currentColor" },
+                        React.createElement("path", { fillRule: "evenodd", d: "M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z", clipRule: "evenodd" }))),
+                isPlanVisible && (React.createElement("div", { className: "mt-2 pl-4 border-l-2 border-secondary/50 space-y-4" }, tip.checkpoints.map((checkpoint, index) => (React.createElement("div", { key: index },
+                    React.createElement("h4", { className: "font-bold text-text-primary" },
+                        index + 1,
+                        ". ",
+                        checkpoint.title),
+                    React.createElement("p", { className: "text-text-secondary text-sm pl-4" }, checkpoint.instructions)))))))),
             React.createElement("div", { className: "border-t border-gray-200 pt-4 mt-4" },
                 React.createElement("div", { className: "flex items-center justify-between" },
                     React.createElement("div", null,
@@ -628,13 +1027,26 @@ const Loader = () => {
 };
 
 // --- components/Map.tsx ---
-const MapComponent = ({ tips, activeTipId, onMarkerClick }) => {
+const getBrandLogo = (brand) => {
+    if (!brand)
+        return '';
+    const b = brand.toLowerCase();
+    if (b === 'uber')
+        return 'https://upload.wikimedia.org/wikipedia/commons/thumb/5/58/Uber_logo_2018.svg/44px-Uber_logo_2018.svg.png';
+    if (b === 'ola')
+        return 'https://upload.wikimedia.org/wikipedia/en/thumb/1/19/Ola_Cabs_logo.svg/50px-Ola_Cabs_logo.svg.png';
+    if (b === 'rapido')
+        return 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/35/Rapido_logo.svg/50px-Rapido_logo.svg.png';
+    return '';
+};
+const MapComponent = ({ tips, activeTip, onMarkerClick, onUserLocationChange }) => {
     const mapRef = useRef(null);
     const mapInstance = useRef(null);
     const tipMarkersRef = useRef({});
     const startMarkerRef = useRef(null);
     const endMarkerRef = useRef(null);
     const routingControlRef = useRef(null);
+    const checkpointLayerRef = useRef(null);
     const debounceTimer = useRef(null);
     const [startPoint, setStartPoint] = useState(null);
     const [endPoint, setEndPoint] = useState(null);
@@ -643,6 +1055,11 @@ const MapComponent = ({ tips, activeTipId, onMarkerClick }) => {
     const [startSuggestions, setStartSuggestions] = useState([]);
     const [endSuggestions, setEndSuggestions] = useState([]);
     const [routeInfo, setRouteInfo] = useState(null);
+    const [rideShareEstimates, setRideShareEstimates] = useState([]);
+    const [isEstimating, setIsEstimating] = useState(false);
+    const [estimationError, setEstimationError] = useState(null);
+    const [isPlanningMode, setIsPlanningMode] = useState(true);
+
     // Initialize map
     useEffect(() => {
         if (!mapRef.current || typeof L === 'undefined' || mapInstance.current) {
@@ -659,30 +1076,31 @@ const MapComponent = ({ tips, activeTipId, onMarkerClick }) => {
             }
         };
     }, []);
-    // Update tip markers
+    // Update tip markers when not in checkpoint view mode
     useEffect(() => {
-        if (!mapInstance.current)
-            return;
+        if (!mapInstance.current || checkpointLayerRef.current) return;
+
+        Object.values(tipMarkersRef.current).forEach(marker => marker.addTo(mapInstance.current)); // re-add markers if they were removed
+
         const currentMarkers = tipMarkersRef.current;
         const tipsWithCoords = tips.filter(tip => tip.coordinates);
         const tipIds = new Set(tipsWithCoords.map(tip => tip.id));
+
         Object.keys(currentMarkers).forEach(tipIdStr => {
-            const tipId = parseInt(tipIdStr, 10);
-            if (!tipIds.has(tipId)) {
-                currentMarkers[tipId].remove();
-                delete currentMarkers[tipId];
+            if (!tipIds.has(parseInt(tipIdStr, 10))) {
+                currentMarkers[tipIdStr].remove();
+                delete currentMarkers[tipIdStr];
             }
         });
+
         tipsWithCoords.forEach(tip => {
-            if (!tip.coordinates)
-                return;
-            const isActive = tip.id === activeTipId;
+            const isActive = activeTip && tip.id === activeTip.id;
             const iconHtml = `<div class="marker-icon-container ${isActive ? 'active' : ''}"><div class="marker-icon-emoji">${getTransportIcon(tip.transportMode)}</div></div>`;
             const icon = L.divIcon({ html: iconHtml, className: 'custom-leaflet-div-icon', iconSize: [32, 32], iconAnchor: [16, 16], popupAnchor: [0, -16] });
+
             if (currentMarkers[tip.id]) {
                 currentMarkers[tip.id].setIcon(icon);
-            }
-            else {
+            } else {
                 const marker = L.marker(tip.coordinates, { icon }).addTo(mapInstance.current);
                 const popupContent = `<div class="p-1"><div class="font-bold">${getTransportIcon(tip.transportMode)} ${tip.origin}</div><div class="text-sm text-text-secondary">To: ${tip.destination}</div><div class="text-sm mt-1">Cost: <span class="font-semibold text-secondary">${tip.estimatedCost}</span></div></div>`;
                 marker.bindPopup(popupContent);
@@ -690,7 +1108,47 @@ const MapComponent = ({ tips, activeTipId, onMarkerClick }) => {
                 tipMarkersRef.current[tip.id] = marker;
             }
         });
-    }, [tips, activeTipId, onMarkerClick]);
+
+    }, [tips, activeTip, onMarkerClick, isPlanningMode]);
+    
+    // Handle checkpoint route display
+    useEffect(() => {
+        if (!mapInstance.current) return;
+        
+        if (activeTip && activeTip.checkpoints && activeTip.checkpoints.length > 0) {
+            setIsPlanningMode(false);
+            // Clear previous layers
+            if (routingControlRef.current) mapInstance.current.removeControl(routingControlRef.current);
+            if (checkpointLayerRef.current) checkpointLayerRef.current.clearLayers();
+            Object.values(tipMarkersRef.current).forEach(marker => marker.remove());
+
+            const checkpoints = activeTip.checkpoints;
+            const latLngs = checkpoints.map(c => c.coordinates);
+            const markers = checkpoints.map((checkpoint, index) => {
+                const icon = L.divIcon({
+                    html: `<div class="checkpoint-marker-icon">${index + 1}</div>`,
+                    className: 'custom-leaflet-div-icon',
+                    iconSize: [28, 28],
+                    iconAnchor: [14, 14]
+                });
+                return L.marker(checkpoint.coordinates, { icon }).bindPopup(`<b>${index + 1}. ${checkpoint.title}</b><br>${checkpoint.instructions}`);
+            });
+            const polyline = L.polyline(latLngs, { color: '#0d9488', weight: 5 });
+            
+            checkpointLayerRef.current = L.featureGroup([...markers, polyline]).addTo(mapInstance.current);
+            mapInstance.current.fitBounds(checkpointLayerRef.current.getBounds().pad(0.2));
+            
+        } else if (!isPlanningMode) {
+            // Exited checkpoint view
+            setIsPlanningMode(true);
+            if (checkpointLayerRef.current) {
+                checkpointLayerRef.current.clearLayers();
+                checkpointLayerRef.current = null;
+            }
+        }
+
+    }, [activeTip]);
+
     const createMarker = (point, ref, label, color) => {
         if (ref.current)
             ref.current.remove();
@@ -710,6 +1168,9 @@ const MapComponent = ({ tips, activeTipId, onMarkerClick }) => {
     useEffect(() => {
         if (routingControlRef.current)
             mapInstance.current.removeControl(routingControlRef.current);
+        // Clear old estimates when route changes
+        setRideShareEstimates([]);
+        setEstimationError(null);
         if (startPoint && endPoint && mapInstance.current) {
             const routingControl = L.Routing.control({
                 waypoints: [L.latLng(startPoint.coords.lat, startPoint.coords.lng), L.latLng(endPoint.coords.lat, endPoint.coords.lng)],
@@ -737,6 +1198,7 @@ const MapComponent = ({ tips, activeTipId, onMarkerClick }) => {
         setSuggestions(data);
     };
     const handleQueryChange = (e, type) => {
+        setIsPlanningMode(true); // Switch to planning mode on user input
         const query = e.target.value;
         if (type === 'start')
             setStartQuery(query);
@@ -752,26 +1214,89 @@ const MapComponent = ({ tips, activeTipId, onMarkerClick }) => {
         const point = { coords: { lat: parseFloat(suggestion.lat), lng: parseFloat(suggestion.lon) }, name: suggestion.display_name };
         if (type === 'start') {
             setStartPoint(point);
-            setStartQuery(suggestion.display_name);
+            setStartQuery(suggestion.display_name.split(',')[0]);
             setStartSuggestions([]);
         }
         else {
             setEndPoint(point);
-            setEndQuery(suggestion.display_name);
+            setEndQuery(suggestion.display_name.split(',')[0]);
             setEndSuggestions([]);
         }
         mapInstance.current.flyTo(point.coords, 14);
     };
     const handleGeolocate = () => {
+        setIsPlanningMode(true);
         navigator.geolocation.getCurrentPosition((position) => {
             const { latitude, longitude } = position.coords;
             const point = { coords: { lat: latitude, lng: longitude }, name: "My Current Location" };
             setStartPoint(point);
             setStartQuery("My Current Location");
             mapInstance.current.flyTo(point.coords, 15);
+            if (onUserLocationChange) {
+                onUserLocationChange({ lat: latitude, lng: longitude });
+            }
         }, (error) => console.error(`Geolocation error: ${error.message}`));
     };
+    const handleGetEstimates = async () => {
+        if (!routeInfo || !startPoint || !endPoint)
+            return;
+        setIsEstimating(true);
+        setEstimationError(null);
+        setRideShareEstimates([]);
+        try {
+            const estimates = await getRideShareEstimates(startQuery, endQuery, routeInfo.distance, routeInfo.time);
+            setRideShareEstimates(estimates || []);
+        }
+        catch (err) {
+            setEstimationError(err.message);
+        }
+        finally {
+            setIsEstimating(false);
+        }
+    };
     const SuggestionList = ({ suggestions, onClick }) => (React.createElement("div", { className: "suggestions-container" }, suggestions.map((s, i) => (React.createElement("div", { key: i, className: "suggestion-item", onClick: () => onClick(s) }, s.display_name)))));
+    const RideShareEstimates = () => {
+        const uberUrl = `https://m.uber.com/ul/?action=setPickup&pickup[latitude]=${startPoint.coords.lat}&pickup[longitude]=${startPoint.coords.lng}&pickup[nickname]=${encodeURIComponent(startPoint.name)}&dropoff[latitude]=${endPoint.coords.lat}&dropoff[longitude]=${endPoint.coords.lng}&dropoff[nickname]=${encodeURIComponent(endPoint.name)}`;
+        const olaUrl = `https://book.olacabs.com/?pickup_lat=${startPoint.coords.lat}&pickup_lng=${startPoint.coords.lng}&drop_lat=${endPoint.coords.lat}&drop_lng=${endPoint.coords.lng}`;
+        const ExternalLinkIcon = () => (
+            React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-4 w-4 ml-1.5", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor", strokeWidth: 2 },
+                React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" })
+            )
+        );
+        return (React.createElement("div", { className: "mt-3 pt-3 border-t border-gray-200" },
+            React.createElement("h4", { className: "font-semibold text-text-primary text-center text-sm mb-2" }, "Ride-Sharing Estimates"),
+            isEstimating && (React.createElement("div", { className: "flex justify-center items-center p-4" },
+                React.createElement("div", { className: "animate-spin rounded-full h-6 w-6 border-t-2 border-b-2 border-primary" }))),
+            estimationError && (React.createElement("div", { className: "text-center text-red-600 bg-red-100 p-2 rounded-md text-sm" }, estimationError)),
+            rideShareEstimates.length > 0 && (React.createElement("div", { className: "space-y-2" },
+                rideShareEstimates.map((est, i) => {
+                    const logoSrc = getBrandLogo(est.brand);
+                    return (React.createElement("div", { key: i, className: "p-2 bg-gray-50 rounded-md" },
+                        React.createElement("div", { className: "flex items-center justify-between" },
+                            React.createElement("div", { className: "flex items-center" },
+                                logoSrc ?
+                                    React.createElement("img", { src: logoSrc, alt: est.brand, className: "h-5 w-auto mr-2 object-contain" }) :
+                                    React.createElement("span", { className: "font-bold text-xs w-11 text-center mr-2" }, est.brand || ''),
+                                React.createElement("div", null,
+                                    React.createElement("p", { className: "font-semibold text-xs text-text-primary" }, est.serviceName),
+                                    React.createElement("p", { className: "text-xs text-text-secondary" }, est.description))),
+                            React.createElement("p", { className: "font-bold text-sm text-secondary" }, est.fareRange)),
+                        React.createElement("div", { className: "text-xs text-text-secondary italic mt-1 pl-8 flex items-center" },
+                            React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-3 w-3 mr-1", viewBox: "0 0 20 20", fill: "currentColor" },
+                                React.createElement("path", { fillRule: "evenodd", d: "M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z", clipRule: "evenodd" })),
+                            React.createElement("span", null, est.reasoning))));
+                }),
+                React.createElement("div", { className: "grid grid-cols-2 gap-2 pt-2" },
+                    React.createElement("a", { href: uberUrl, target: "_blank", rel: "noopener noreferrer", className: "flex items-center justify-center py-2 px-3 bg-black text-white rounded-md text-sm font-semibold hover:bg-gray-800 transition" },
+                        React.createElement("img", { src: "https://upload.wikimedia.org/wikipedia/commons/thumb/5/58/Uber_logo_2018.svg/44px-Uber_logo_2018.svg.png", alt: "Uber", className: "h-4 mr-2 filter invert" }),
+                        React.createElement("span", null, "Check on Uber"),
+                        React.createElement(ExternalLinkIcon, null)),
+                    React.createElement("a", { href: olaUrl, target: "_blank", rel: "noopener noreferrer", className: "flex items-center justify-center py-2 px-3 bg-white text-black border border-gray-300 rounded-md text-sm font-semibold hover:bg-gray-100 transition" },
+                        React.createElement("img", { src: "https://upload.wikimedia.org/wikipedia/en/thumb/1/19/Ola_Cabs_logo.svg/50px-Ola_Cabs_logo.svg.png", alt: "Ola", className: "h-4 mr-2" }),
+                        React.createElement("span", null, "Check on Ola"),
+                        React.createElement(ExternalLinkIcon, null))),
+                React.createElement("p", { className: "rideshare-disclaimer" }, "*These are AI-powered estimates. For live pricing, the links will open the official sites in a ", React.createElement("strong", null, "new tab"), ".")))));
+    };
     return (React.createElement("div", { className: "bg-surface rounded-xl shadow-lg p-6" },
         React.createElement("h3", { className: "text-xl font-bold text-text-primary mb-4" }, "Plan a Route"),
         React.createElement("div", { style: { height: '500px' }, className: "rounded-lg overflow-hidden relative", role: "application" },
@@ -785,16 +1310,73 @@ const MapComponent = ({ tips, activeTipId, onMarkerClick }) => {
                 React.createElement("div", { className: "directions-input-group" },
                     React.createElement("input", { type: "text", value: endQuery, onChange: e => handleQueryChange(e, 'end'), placeholder: "To: address or location", className: "directions-input" }),
                     endSuggestions.length > 0 && React.createElement(SuggestionList, { suggestions: endSuggestions, onClick: s => handleSuggestionClick(s, 'end') })),
-                routeInfo && (React.createElement("div", { className: "route-summary" },
-                    React.createElement("p", null,
-                        React.createElement("strong", null, "Distance:"),
-                        " ",
-                        routeInfo.distance),
-                    React.createElement("p", null,
-                        React.createElement("strong", null, "Time:"),
-                        " ",
-                        routeInfo.time)))),
+                routeInfo && (React.createElement(React.Fragment, null,
+                    React.createElement("div", { className: "route-summary" },
+                        React.createElement("p", null,
+                            React.createElement("strong", null, "Distance:"),
+                            " ",
+                            routeInfo.distance),
+                        React.createElement("p", null,
+                            React.createElement("strong", null, "Time:"),
+                            " ",
+                            routeInfo.time)),
+                    React.createElement("button", { onClick: handleGetEstimates, disabled: isEstimating, className: "w-full mt-2 px-4 py-2 bg-primary text-white text-sm font-semibold rounded-md hover:bg-orange-600 disabled:bg-gray-400" }, isEstimating ? 'Estimating...' : 'Get Ride-Share Estimates'))),
+                (isEstimating || estimationError || rideShareEstimates.length > 0) && React.createElement(RideShareEstimates, null)),
             React.createElement("div", { ref: mapRef, className: "h-full w-full bg-gray-200" }))));
+};
+
+// --- components/CheckpointsMap.tsx ---
+const CheckpointsMap = ({ checkpoints }) => {
+    const mapRef = useRef(null);
+    const mapInstance = useRef(null);
+    const layerRef = useRef(null);
+
+    useEffect(() => {
+        if (!mapRef.current || mapInstance.current) return;
+        mapInstance.current = L.map(mapRef.current, {
+            scrollWheelZoom: false,
+            dragging: false,
+            zoomControl: false,
+            doubleClickZoom: false,
+        });
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap'
+        }).addTo(mapInstance.current);
+
+        return () => {
+            if (mapInstance.current) {
+                mapInstance.current.remove();
+                mapInstance.current = null;
+            }
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!mapInstance.current || !checkpoints || checkpoints.length === 0) return;
+
+        if (layerRef.current) {
+            layerRef.current.clearLayers();
+        }
+
+        const latLngs = checkpoints.map(c => c.coordinates);
+        const markers = checkpoints.map((checkpoint, index) => {
+            const icon = L.divIcon({
+                html: `<div class="checkpoint-marker-icon">${index + 1}</div>`,
+                className: 'custom-leaflet-div-icon',
+                iconSize: [28, 28],
+                iconAnchor: [14, 14]
+            });
+            return L.marker(checkpoint.coordinates, { icon }).bindPopup(`<b>${checkpoint.title}</b>`);
+        });
+        const polyline = L.polyline(latLngs, { color: '#0d9488' });
+
+        layerRef.current = L.featureGroup([...markers, polyline]).addTo(mapInstance.current);
+        mapInstance.current.fitBounds(layerRef.current.getBounds().pad(0.2));
+
+    }, [checkpoints]);
+
+
+    return React.createElement("div", { ref: mapRef, className: "h-64 w-full rounded-lg bg-gray-200 mt-2" });
 };
 
 // --- components/TipForm.tsx ---
@@ -805,10 +1387,31 @@ const TipForm = ({ onClose, onSubmit, currentUser }) => {
     const [estimatedCost, setEstimatedCost] = useState('');
     const [estimatedTime, setEstimatedTime] = useState('');
     const [advice, setAdvice] = useState('');
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
+    const [analysisResult, setAnalysisResult] = useState(null);
+    const [analysisError, setAnalysisError] = useState('');
+
+    const canAnalyze = origin.trim() && destination.trim() && advice.trim();
+
+    const handleAnalyze = async () => {
+        if (!canAnalyze) return;
+        setIsAnalyzing(true);
+        setAnalysisError('');
+        setAnalysisResult(null);
+        try {
+            const result = await analyzeAndEnhanceTip(origin, destination, advice);
+            setAdvice(result.enhancedAdvice);
+            setAnalysisResult(result);
+        } catch (error) {
+            setAnalysisError(error.message);
+        } finally {
+            setIsAnalyzing(false);
+        }
+    };
+
     const handleSubmit = (e) => {
         e.preventDefault();
-        if (!currentUser)
-            return; // Guard against submission without user
+        if (!currentUser) return;
         onSubmit({
             origin,
             destination,
@@ -816,9 +1419,11 @@ const TipForm = ({ onClose, onSubmit, currentUser }) => {
             estimatedCost,
             estimatedTime,
             advice,
+            checkpoints: analysisResult ? analysisResult.checkpoints : undefined,
         });
         onClose();
     };
+
     return (React.createElement("div", { className: "fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4", role: "dialog", "aria-modal": "true", "aria-labelledby": "form-title" },
         React.createElement("div", { className: "bg-surface rounded-xl shadow-2xl p-6 md:p-8 w-full max-w-lg max-h-full overflow-y-auto" },
             React.createElement("div", { className: "flex justify-between items-center mb-6" },
@@ -849,6 +1454,24 @@ const TipForm = ({ onClose, onSubmit, currentUser }) => {
                 React.createElement("div", null,
                     React.createElement("label", { htmlFor: "advice", className: "block text-sm font-medium text-text-secondary mb-1" }, "Advice / Tip"),
                     React.createElement("textarea", { id: "advice", value: advice, onChange: e => setAdvice(e.target.value), required: true, rows: 4, className: "w-full p-2 border border-gray-300 rounded-md focus:ring-primary focus:border-primary", placeholder: "Share your wisdom..." })),
+                React.createElement("div", { className: "border-t pt-4 space-y-4" },
+                    React.createElement("button", { type: "button", onClick: handleAnalyze, disabled: !canAnalyze || isAnalyzing, className: "w-full flex items-center justify-center px-4 py-2 bg-secondary text-white font-semibold rounded-md hover:bg-teal-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors" },
+                        isAnalyzing ? (React.createElement(React.Fragment, null,
+                            React.createElement("svg", { className: "animate-spin -ml-1 mr-3 h-5 w-5 text-white", xmlns: "http://www.w3.org/2000/svg", fill: "none", viewBox: "0 0 24 24" },
+                                React.createElement("circle", { className: "opacity-25", cx: "12", cy: "12", r: "10", stroke: "currentColor", strokeWidth: "4" }),
+                                React.createElement("path", { className: "opacity-75", fill: "currentColor", d: "M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" })),
+                            "Analyzing...")) : (React.createElement(React.Fragment, null,
+                            "Analyze & Enhance with AI \u2728"))),
+                    analysisError && (React.createElement("div", { className: "text-center text-red-600 bg-red-100 p-2 rounded-md text-sm" }, analysisError)),
+                    analysisResult && (React.createElement("div", { className: "p-4 bg-orange-50 rounded-md border-l-4 border-orange-300 space-y-3" },
+                        React.createElement("h3", { className: "font-bold text-text-primary" }, "AI-Generated Route Plan"),
+                        React.createElement(CheckpointsMap, { checkpoints: analysisResult.checkpoints }),
+                        React.createElement("div", { className: "space-y-2 text-sm" }, analysisResult.checkpoints.map((cp, i) => (React.createElement("div", { key: i },
+                            React.createElement("p", { className: "font-semibold" },
+                                i + 1,
+                                ". ",
+                                cp.title),
+                            React.createElement("p", { className: "pl-4 text-text-secondary" }, cp.instructions)))))))),
                 React.createElement("div", { className: "flex justify-end pt-4" },
                     React.createElement("button", { type: "button", onClick: onClose, className: "mr-3 px-4 py-2 bg-gray-200 text-text-secondary rounded-md hover:bg-gray-300" }, "Cancel"),
                     React.createElement("button", { type: "submit", disabled: !currentUser, className: "px-6 py-2 bg-primary text-white font-semibold rounded-md hover:bg-orange-600 disabled:bg-gray-400 disabled:cursor-not-allowed" }, "Submit Tip"))))));
@@ -873,7 +1496,7 @@ const renderContent = (content) => {
         .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline">$1</a>');
     return { __html: formatted };
 };
-const ChatWindow = ({ isOpen, onClose, tips }) => {
+const ChatWindow = ({ isOpen, onClose, tips, userLocation }) => {
     const [messages, setMessages] = useState([]);
     const [userInput, setUserInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
@@ -900,7 +1523,7 @@ const ChatWindow = ({ isOpen, onClose, tips }) => {
         setUserInput('');
         setIsLoading(true);
         try {
-            const stream = postChatMessageStream(trimmedInput, tips);
+            const stream = postChatMessageStream(trimmedInput, tips, userLocation);
             for await (const chunk of stream) {
                 setMessages(prev => {
                     const newMessages = [...prev];
@@ -1050,9 +1673,10 @@ const App = () => {
     const [currentUser, setCurrentUser] = useState(null);
     const [isGsiScriptLoaded, setIsGsiScriptLoaded] = useState(false);
     const [isChatOpen, setIsChatOpen] = useState(false);
-    const [activeTipId, setActiveTipId] = useState(null);
+    const [activeTip, setActiveTip] = useState(null);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
     const [authModal, setAuthModal] = useState({ isOpen: false, mode: 'login' });
+    const [userLocation, setUserLocation] = useState(null);
     const tipRefs = useRef([]);
     const GOOGLE_CLIENT_ID = '538610246370-04j4u9jdns39e5ne5b9p99jjjvv7fduc.apps.googleusercontent.com';
     useEffect(() => {
@@ -1084,7 +1708,7 @@ const App = () => {
                 setUsers(sortedUsers);
             }
             catch (err) {
-                setError('Failed to fetch travel tips from the server. Please try again later.');
+                setError('Failed to fetch travel tips. Please try again later.');
                 console.error(err);
             }
             finally {
@@ -1106,7 +1730,7 @@ const App = () => {
             handleAuthSuccess({user, token});
         }
         catch (error) {
-            console.error("Authentication with backend failed:", error);
+            console.error("Authentication with local service failed:", error);
             setError("Login failed. Please try again.");
         }
     };
@@ -1181,7 +1805,7 @@ const App = () => {
             });
         }
         catch (error) {
-            console.error("Failed to add tip via backend:", error);
+            console.error("Failed to add tip locally:", error);
             setError("Sorry, we couldn't save your tip. Please try again.");
         }
     };
@@ -1216,8 +1840,9 @@ const App = () => {
         }
     };
     const handleMarkerClick = (tipId) => {
-        setActiveTipId(tipId);
-        const tipIndex = tips.findIndex(tip => tip.id === tipId);
+        const tip = tips.find(t => t.id === tipId);
+        setActiveTip(tip || null);
+        const tipIndex = tips.findIndex(t => t.id === tipId);
         if (tipIndex !== -1 && tipRefs.current[tipIndex]) {
             tipRefs.current[tipIndex].current?.scrollIntoView({
                 behavior: 'smooth',
@@ -1225,6 +1850,9 @@ const App = () => {
             });
         }
     };
+    const handleUserLocationChange = useCallback((location) => {
+        setUserLocation(location);
+    }, []);
     return (React.createElement("div", { className: "min-h-screen bg-background text-text-primary font-sans relative overflow-x-hidden" },
         React.createElement(Sidebar, { isOpen: isSidebarOpen, onClose: () => setIsSidebarOpen(false), onAddTipClick: handleAddTipClick, currentUser: currentUser, onLogout: handleLogout, onOpenAuthModal: handleOpenAuthModal }),
         isSidebarOpen && (React.createElement("div", { className: "fixed inset-0 bg-black bg-opacity-50 z-20", onClick: () => setIsSidebarOpen(false), "aria-hidden": "true" })),
@@ -1238,15 +1866,15 @@ const App = () => {
                 !isLoading && !error && (React.createElement("div", { className: "grid grid-cols-1 lg:grid-cols-3 gap-8 mt-8" },
                     React.createElement("div", { className: "lg:col-span-2 space-y-6" },
                         React.createElement("h2", { className: "text-2xl font-bold text-text-primary border-b-2 border-primary pb-2" }, "Community Tips"),
-                        filteredTips.length > 0 ? (filteredTips.map((tip, index) => (React.createElement(TipCard, { key: tip.id, tip: tip, onRatingChange: handleRatingChange, onHover: setActiveTipId, isActive: tip.id === activeTipId, ref: tipRefs.current[index] })))) : (React.createElement("div", { className: "text-center py-12 bg-surface rounded-lg shadow-md" },
+                        filteredTips.length > 0 ? (filteredTips.map((tip, index) => (React.createElement(TipCard, { key: tip.id, tip: tip, onRatingChange: handleRatingChange, onSetActiveTip: setActiveTip, isActive: activeTip?.id === tip.id, ref: tipRefs.current[index] })))) : (React.createElement("div", { className: "text-center py-12 bg-surface rounded-lg shadow-md" },
                             React.createElement("p", { className: "text-text-secondary" }, "No tips found for your search. Be the first to add one!")))),
                     React.createElement("aside", { className: "space-y-8" },
                         React.createElement(Leaderboard, { users: users }),
-                        React.createElement(MapComponent, { tips: tips, activeTipId: activeTipId, onMarkerClick: handleMarkerClick })))))),
+                        React.createElement(MapComponent, { tips: tips, activeTip: activeTip, onMarkerClick: handleMarkerClick, onUserLocationChange: handleUserLocationChange })))))),
         isFormOpen && (React.createElement(TipForm, { onClose: () => setIsFormOpen(false), onSubmit: handleAddTip, currentUser: currentUser })),
         authModal.isOpen && React.createElement(AuthModal, { mode: authModal.mode, onClose: () => setAuthModal({isOpen: false, mode: 'login'}), onAuthSuccess: handleAuthSuccess }),
         React.createElement(ChatButton, { onClick: () => setIsChatOpen(true) }),
-        React.createElement(ChatWindow, { isOpen: isChatOpen, onClose: () => setIsChatOpen(false), tips: filteredTips })));
+        React.createElement(ChatWindow, { isOpen: isChatOpen, onClose: () => setIsChatOpen(false), tips: filteredTips, userLocation: userLocation })));
 };
 
 // ===== From index.tsx (entry point) =====
