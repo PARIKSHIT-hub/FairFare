@@ -222,7 +222,7 @@
   "imports": {
     "react": "https://esm.sh/react@^18.2.0",
     "react-dom/client": "https://esm.sh/react-dom@^18.2.0/client",
-    "@google/genai": "https://esm.sh/@google/genai@^1.15.0"
+    "@google/genai": "https://esm.sh/@google/genai"
   }
 }
 </script>
@@ -241,6 +241,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 // 2. POLYFILLS & GLOBAL CONFIG
 // ==========================================
 // Polyfill process.env for browser environment and provide API key
+// NOTE: Ensure your API_KEY is valid and has access to Gemini 2.5/3.0 models.
 const process = {
   env: {
     API_KEY: "AIzaSyANMMrBd-cx6vambZINtViRf4LFzz-Se2g"
@@ -276,7 +277,7 @@ const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 const getCoordinatesForAddress = async (address) => {
     try {
         const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
+            model: "gemini-3-flash-preview",
             contents: `Find the geographic coordinates (latitude and longitude) for this location in India: ${address}.`,
             config: {
                 responseMimeType: "application/json",
@@ -321,7 +322,7 @@ const getRideShareEstimates = async (origin, destination, distance, time) => {
       Return the data in JSON format.
     `;
         const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
+            model: "gemini-3-flash-preview",
             contents: prompt,
             config: {
                 responseMimeType: "application/json",
@@ -378,7 +379,7 @@ const analyzeAndEnhanceTip = async (origin, destination, advice) => {
   `;
     try {
         const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
+            model: "gemini-3-flash-preview",
             contents: prompt,
             config: {
                 responseMimeType: "application/json",
@@ -459,7 +460,7 @@ Use this to provide localized suggestions if relevant to the user's query.
     const contents = `${tipsContext}${locationContext}\n\n**User's Question:** ${message}`;
     try {
         const response = await ai.models.generateContentStream({
-            model: "gemini-2.5-flash",
+            model: "gemini-3-flash-preview",
             contents: contents,
             config: {
                 systemInstruction: systemInstruction,
