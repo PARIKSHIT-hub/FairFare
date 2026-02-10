@@ -429,15 +429,15 @@ const analyzeAndEnhanceTip = async (origin, destination, advice) => {
         throw new Error("The AI failed to analyze the tip. Please check the locations or try again.");
     }
 };
-async function* getAiChatResponseStream(message, contextTips, userLocation) {
+
+async function* getAiChatResponseStream(message, contextTips, userLocation, searchMode = 'web') {
     const systemInstruction = `You are FareGuide, an expert AI travel assistant for India. 
     Your goal is to provide helpful, safe, and budget-conscious travel advice.
     - Be friendly, clear, and encouraging.
     - Use the provided "Community Tips" as your primary source of information when relevant. Reference them directly if a user's question is about a specific trip shown.
-    - Be aware of the user's current location if provided, and use it to give more relevant, contextual advice. For example, suggesting nearby places or transport options.
-    - If the user asks a general question, use your own knowledge but keep the advice grounded and practical for a traveler in India.
-    - Do not make up fares or routes; if you don't know, say so.
+    - Be aware of the user's current location if provided, and use it to give more relevant, contextual advice.
     - Format responses with simple markdown (bolding with **text**).`;
+    
     const tipsContext = contextTips.length > 0 ? `
 ---
 **Community Tips on Screen:**
@@ -454,25 +454,59 @@ ${contextTips.map(tip => `
 ---
 **User's Current Location:**
 Latitude: ${userLocation.lat}, Longitude: ${userLocation.lng}.
-Use this to provide localized suggestions if relevant to the user's query.
 ---
 ` : "";
     const contents = `${tipsContext}${locationContext}\n\n**User's Question:** ${message}`;
+    
+    // Determine model and tools based on mode
+    let model = 'gemini-3-flash-preview';
+    let tools = [];
+    let toolConfig = undefined;
+
+    if (searchMode === 'maps') {
+        model = 'gemini-2.5-flash';
+        tools = [{ googleMaps: {} }];
+        // Only add latLng if we have a valid location to ground the maps query
+        if (userLocation) {
+            toolConfig = {
+                retrievalConfig: {
+                    latLng: {
+                        latitude: userLocation.lat,
+                        longitude: userLocation.lng
+                    }
+                }
+            };
+        }
+    } else {
+        // Default to web/general
+        model = 'gemini-3-flash-preview';
+        tools = [{ googleSearch: {} }];
+    }
+
     try {
-        const response = await ai.models.generateContentStream({
-            model: "gemini-3-flash-preview",
+        const responseStream = await ai.models.generateContentStream({
+            model: model,
             contents: contents,
             config: {
                 systemInstruction: systemInstruction,
+                tools: tools,
+                toolConfig: toolConfig
             },
         });
-        for await (const chunk of response) {
-            yield chunk.text;
+
+        for await (const chunk of responseStream) {
+            // Check for grounding metadata in the candidates
+            const groundingMetadata = chunk.candidates?.[0]?.groundingMetadata;
+            
+            yield {
+                text: chunk.text,
+                groundingMetadata: groundingMetadata
+            };
         }
     }
     catch (error) {
         console.error("Error streaming chat response from Gemini API:", error);
-        yield "I'm sorry, I encountered an error while trying to respond. Please check the connection and try again.";
+        yield { text: "I'm sorry, I encountered an error while trying to respond. Please check the connection and try again." };
     }
 }
 
@@ -646,9 +680,9 @@ const updateRating = async (tipId, change) => {
     // --- End of LocalStorage Simulation ---
 };
 
-async function* postChatMessageStream(message, contextTips, userLocation) {
-    console.log("Streaming chat message from AI service:", message);
-    yield* getAiChatResponseStream(message, contextTips, userLocation);
+async function* postChatMessageStream(message, contextTips, userLocation, searchMode) {
+    console.log(`Streaming chat message from AI service (${searchMode}):`, message);
+    yield* getAiChatResponseStream(message, contextTips, userLocation, searchMode);
 }
 
 const loginWithGoogle = async (credential) => {
@@ -1492,12 +1526,14 @@ const ChatWindow = ({ isOpen, onClose, tips, userLocation }) => {
     const [messages, setMessages] = useState([]);
     const [userInput, setUserInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [searchMode, setSearchMode] = useState('web'); // 'web' or 'maps'
     const messagesEndRef = useRef(null);
+
     useEffect(() => {
         if (isOpen && messages.length === 0) {
             setMessages([{
                     role: 'model',
-                    content: 'Hello! I am FareGuide, your AI travel assistant. Ask me about the tips on your screen or any other travel questions you have!'
+                    content: 'Hello! I am FareGuide, your AI travel assistant. I can help with general questions or find specific places!'
                 }]);
         }
     }, [isOpen, messages.length]);
@@ -1511,15 +1547,21 @@ const ChatWindow = ({ isOpen, onClose, tips, userLocation }) => {
         if (!trimmedInput)
             return;
         const userMessage = { role: 'user', content: trimmedInput };
-        setMessages(prev => [...prev, userMessage, { role: 'model', content: '' }]);
+        setMessages(prev => [...prev, userMessage, { role: 'model', content: '', groundingMetadata: null }]);
         setUserInput('');
         setIsLoading(true);
         try {
-            const stream = postChatMessageStream(trimmedInput, tips, userLocation);
+            const stream = postChatMessageStream(trimmedInput, tips, userLocation, searchMode);
             for await (const chunk of stream) {
                 setMessages(prev => {
                     const newMessages = [...prev];
-                    newMessages[newMessages.length - 1].content += chunk;
+                    const lastMsg = newMessages[newMessages.length - 1];
+                    if (chunk.text) {
+                        lastMsg.content += chunk.text;
+                    }
+                    if (chunk.groundingMetadata) {
+                        lastMsg.groundingMetadata = chunk.groundingMetadata;
+                    }
                     return newMessages;
                 });
             }
@@ -1536,18 +1578,80 @@ const ChatWindow = ({ isOpen, onClose, tips, userLocation }) => {
             setIsLoading(false);
         }
     };
+    
+    // Helper to render grounding sources
+    const renderGroundingSources = (metadata) => {
+        if (!metadata || !metadata.groundingChunks || metadata.groundingChunks.length === 0) return null;
+        
+        let sources = [];
+        
+        // Handle Google Search chunks (Web)
+        const webChunks = metadata.groundingChunks.filter(c => c.web);
+        if (webChunks.length > 0) {
+            sources = webChunks.map((c, i) => (
+                <a key={`web-${i}`} href={c.web.uri} target="_blank" rel="noopener noreferrer" className="block text-xs text-blue-600 hover:underline truncate">
+                    {i + 1}. {c.web.title}
+                </a>
+            ));
+        }
+
+        // Handle Google Maps chunks
+        // Maps grounding structure: groundingChunks.maps.uri or groundingChunks.maps.placeAnswerSources
+        // Actually the chunks array items usually have specific keys.
+        // Let's filter for anything that looks like a source with a URI.
+        const otherChunks = metadata.groundingChunks.filter(c => !c.web);
+        otherChunks.forEach((c, i) => {
+             // Basic fallback for unknown structure, though Maps usually puts details in retrievalMetadata or specific chunks
+             // Based on prompt: groundingChunks.maps.uri or reviewSnippets
+             // Let's inspect if `c.maps` exists
+             if (c.maps && c.maps.uri) {
+                 sources.push(
+                     <a key={`maps-${i}`} href={c.maps.uri} target="_blank" rel="noopener noreferrer" className="block text-xs text-secondary hover:underline truncate">
+                        📍 {c.maps.title || "View on Google Maps"}
+                     </a>
+                 );
+             }
+        });
+
+        if (sources.length === 0) return null;
+
+        return (
+            <div className="mt-2 pt-2 border-t border-gray-200">
+                <p className="text-xs font-semibold text-gray-500 mb-1">Sources:</p>
+                <div className="space-y-1">
+                    {sources}
+                </div>
+            </div>
+        );
+    };
+
     if (!isOpen)
         return null;
     return (React.createElement("div", { className: "fixed bottom-24 right-6 w-11/12 max-w-md h-3/4 max-h-[600px] bg-surface rounded-xl shadow-2xl flex flex-col z-20 transition-transform transform origin-bottom-right", role: "dialog", "aria-modal": "true" },
-        React.createElement("div", { className: "flex justify-between items-center p-4 bg-primary text-white rounded-t-xl" },
-            React.createElement("h3", { className: "font-bold text-lg" }, "Chat with FareGuide"),
-            React.createElement("button", { onClick: onClose, className: "hover:bg-orange-600 rounded-full p-1", "aria-label": "Close chat" },
-                React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-6 w-6", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor" },
-                    React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M6 18L18 6M6 6l12 12" })))),
+        React.createElement("div", { className: "flex flex-col p-4 bg-primary text-white rounded-t-xl" },
+            React.createElement("div", { className: "flex justify-between items-center mb-2" },
+                React.createElement("h3", { className: "font-bold text-lg" }, "Chat with FareGuide"),
+                React.createElement("button", { onClick: onClose, className: "hover:bg-orange-600 rounded-full p-1", "aria-label": "Close chat" },
+                    React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-6 w-6", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor" },
+                        React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M6 18L18 6M6 6l12 12" })))),
+             // Mode Selector
+            React.createElement("div", { className: "flex bg-orange-700/30 p-1 rounded-lg" },
+                React.createElement("button", { 
+                    onClick: () => setSearchMode('web'),
+                    className: `flex-1 py-1 px-2 text-xs font-medium rounded-md transition-colors ${searchMode === 'web' ? 'bg-white text-primary shadow-sm' : 'text-white/80 hover:bg-white/10'}`
+                }, "Web Search"),
+                React.createElement("button", { 
+                    onClick: () => setSearchMode('maps'),
+                    className: `flex-1 py-1 px-2 text-xs font-medium rounded-md transition-colors ${searchMode === 'maps' ? 'bg-white text-primary shadow-sm' : 'text-white/80 hover:bg-white/10'}`
+                }, "Maps Search")
+            )
+        ),
         React.createElement("div", { className: "flex-1 p-4 overflow-y-auto bg-background" },
             messages.map((msg, index) => (React.createElement("div", { key: index, className: `flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} mb-3` },
                 React.createElement("div", { className: `max-w-xs lg:max-w-md px-4 py-2 rounded-2xl ${msg.role === 'user' ? 'bg-primary text-white' : 'bg-gray-200 text-text-primary'}` },
-                    React.createElement("div", { className: "text-sm", dangerouslySetInnerHTML: renderContent(msg.content) }))))),
+                    React.createElement("div", { className: "text-sm", dangerouslySetInnerHTML: renderContent(msg.content) }),
+                    msg.role === 'model' && renderGroundingSources(msg.groundingMetadata)
+                 )))),
             isLoading && messages[messages.length - 1]?.content === '' && (React.createElement("div", { className: "flex justify-start mb-3" },
                 React.createElement("div", { className: "max-w-xs lg:max-w-md px-4 py-2 rounded-2xl bg-gray-200 text-text-primary" },
                     React.createElement("div", { className: "flex items-center space-x-1" },
@@ -1557,7 +1661,7 @@ const ChatWindow = ({ isOpen, onClose, tips, userLocation }) => {
             React.createElement("div", { ref: messagesEndRef })),
         React.createElement("div", { className: "p-4 border-t border-gray-200 bg-surface rounded-b-xl" },
             React.createElement("form", { onSubmit: handleSendMessage, className: "flex items-center space-x-2" },
-                React.createElement("input", { type: "text", value: userInput, onChange: (e) => setUserInput(e.target.value), placeholder: "Ask for advice...", "aria-label": "Your message", className: "w-full p-2 border border-gray-300 rounded-full focus:ring-primary focus:border-primary", disabled: isLoading }),
+                React.createElement("input", { type: "text", value: userInput, onChange: (e) => setUserInput(e.target.value), placeholder: searchMode === 'maps' ? "Ask about a place..." : "Ask for advice...", "aria-label": "Your message", className: "w-full p-2 border border-gray-300 rounded-full focus:ring-primary focus:border-primary", disabled: isLoading }),
                 React.createElement("button", { type: "submit", disabled: isLoading, className: "bg-primary text-white rounded-full p-3 hover:bg-orange-600 disabled:bg-gray-400 transition" },
                     React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-5 w-5", viewBox: "0 0 20 20", fill: "currentColor" },
                         React.createElement("path", { d: "M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" })))))));
